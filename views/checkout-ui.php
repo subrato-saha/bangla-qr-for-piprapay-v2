@@ -484,15 +484,23 @@
             padding: 3px 9px; border-radius: 14px; font-weight: 600; color: #334155;
         }
 
-        .btn-download-qr {
-            display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-            background: #f1f5f9; color: var(--text-dark); border: 1px solid #cbd5e1;
-            padding: 0.6rem 1.2rem; border-radius: 30px;
-            font-size: 0.85rem; font-weight: 600; cursor: pointer;
-            text-decoration: none; transition: all 0.2s; margin-top: 0.65rem;
-            max-width: 100%;
+        .screenshot-tip-badge {
+            background: #f0f9ff;
+            border: 1px solid #bae6fd;
+            border-radius: 12px;
+            padding: 0.65rem 0.85rem;
+            margin: 0.75rem 0;
+            font-size: 0.8rem;
+            color: #0369a1;
+            line-height: 1.45;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-align: left;
         }
-        .btn-download-qr:hover { background: #e2e8f0; color: var(--primary-color); border-color: #94a3b8; transform: translateY(-1px); }
+        .screenshot-tip-badge strong {
+            color: #0c4a6e;
+        }
 
         .instruction-list {
             list-style: none; padding: 0; margin: 0 0 1.25rem 0;
@@ -555,30 +563,6 @@
         @keyframes popIn {
             0% { transform: scale(0); opacity: 0; }
             100% { transform: scale(1); opacity: 1; }
-        }
-
-        /* QR Save Modal (Flutter WebView & Mobile) */
-        .qr-save-modal {
-            display: none;
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(15, 23, 42, 0.65);
-            backdrop-filter: blur(3px);
-            z-index: 10000;
-            align-items: center;
-            justify-content: center;
-            padding: 1rem;
-        }
-
-        .qr-save-content {
-            background: #ffffff;
-            border-radius: 18px;
-            max-width: 320px;
-            width: 100%;
-            padding: 1.25rem;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
-            text-align: center;
-            animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
         }
 
         /* Slide transition */
@@ -724,15 +708,6 @@
             }
             .qr-scan-guide {
                 font-size: 0.82rem;
-            }
-            .btn-download-qr {
-                width: 100%;
-                max-width: 300px;
-                font-size: 0.8rem;
-                padding: 0.55rem 0.8rem;
-                white-space: normal;
-                border-radius: 25px;
-            }
             .supported-apps-strip {
                 padding: 0.5rem 0.6rem;
                 gap: 4px;
@@ -942,13 +917,15 @@
                     </div>
 
                     <div class="qr-scan-guide">
-                        Open bKash, Nagad, Rocket, Cellfin, Astha or Bank App & Scan
+                        Open bKash, Nagad, Rocket, Cellfin, Astha or Bank App &amp; Scan
                     </div>
 
-                    <div>
-                        <button type="button" id="btnDownloadQr" class="btn-download-qr" onclick="downloadOrSaveQr(event)">
-                            <i class="bi bi-download"></i> Download QR (For Gallery Scan)
-                        </button>
+                    <!-- Screenshot / Gallery Scan Guidance Badge -->
+                    <div class="screenshot-tip-badge">
+                        <span style="font-size: 1.25rem; line-height: 1; flex-shrink: 0;">📸</span>
+                        <div>
+                            <strong>Paying on this phone?</strong> Take a screenshot of this QR and select it from your MFS/Bank app's Gallery Scan.
+                        </div>
                     </div>
 
                     <div class="supported-apps-strip">
@@ -973,7 +950,7 @@
                     <li class="instruction-item">
                         <div class="step-number">2</div>
                         <div class="step-content">
-                            <span>Tap <strong>Scan QR</strong> (or upload downloaded QR from gallery)</span>
+                            <span>Tap <strong>Scan QR</strong> (or upload screenshot from gallery)</span>
                         </div>
                     </li>
                     <li class="instruction-item">
@@ -1013,27 +990,6 @@
         <p class="text-muted mb-4" id="successMessage">Your payment has been verified successfully.</p>
         <div class="spinner-border text-primary spinner-border-sm" role="status"></div>
         <span class="text-muted small mt-2">Redirecting to receipt...</span>
-    </div>
- 
-    <!-- Save QR Modal (For Flutter WebView & Mobile Browsers) -->
-    <div class="qr-save-modal" id="qrSaveModal" onclick="if(event.target===this) closeQrSaveModal();">
-        <div class="qr-save-content">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <h6 class="fw-bold mb-0 text-dark" style="font-size: 0.95rem;">
-                    <i class="bi bi-download text-primary me-1"></i> Save to Gallery
-                </h6>
-                <button type="button" class="btn-close" style="font-size: 0.75rem;" onclick="closeQrSaveModal()"></button>
-            </div>
-            <p class="text-muted small mb-2" style="font-size: 0.8rem; line-height: 1.4;">
-                Tap &amp; hold (long press) the QR code below, then tap <strong>"Save image"</strong> or <strong>"Download image"</strong>.
-            </p>
-            <div class="text-center my-2">
-                <img src="<?php echo htmlspecialchars($qr_image_url) ?>" class="rounded border p-1" style="max-width: 170px; height: auto;" alt="QR Code">
-            </div>
-            <button type="button" class="btn btn-sm btn-primary w-100 py-2 rounded-pill mt-2 fw-semibold" onclick="closeQrSaveModal()">
-                Done
-            </button>
-        </div>
     </div>
 
     <!-- Bootstrap JS -->
@@ -1215,61 +1171,6 @@
         }
 
         tickTimer();
-
-        // ── QR Download & Save Handler (Flutter WebView & Mobile Safe) ──
-        async function downloadOrSaveQr(e) {
-            if (e && e.preventDefault) e.preventDefault();
-
-            var qrUrl = "<?php echo htmlspecialchars($download_image_url) ?>";
-            var fileName = "BanglaQR_Payment_<?php echo $payment_id ?>.jpg";
-
-            // 1. Try Web Share API with File (Native Share / Save sheet in mobile WebViews)
-            try {
-                var res = await fetch(qrUrl);
-                var blob = await res.blob();
-
-                if (navigator.share && navigator.canShare) {
-                    var file = new File([blob], fileName, { type: blob.type || 'image/jpeg' });
-                    if (navigator.canShare({ files: [file] })) {
-                        await navigator.share({
-                            files: [file],
-                            title: 'Bangla QR Code',
-                            text: 'Scan this Bangla QR to pay'
-                        });
-                        return;
-                    }
-                }
-
-                // 2. Programmatic Blob download (works in regular desktop & mobile browsers)
-                var blobUrl = window.URL.createObjectURL(blob);
-                var tempLink = document.createElement('a');
-                tempLink.style.display = 'none';
-                tempLink.href = blobUrl;
-                tempLink.download = fileName;
-                document.body.appendChild(tempLink);
-                tempLink.click();
-                setTimeout(function() {
-                    window.URL.revokeObjectURL(blobUrl);
-                    document.body.removeChild(tempLink);
-                }, 1000);
-
-                // In case WebView restricts automatic file downloads, also show visual guidance
-                showQrSaveModal();
-            } catch (err) {
-                // In restricted Flutter WebView, open modal so user can easily long-press to save
-                showQrSaveModal();
-            }
-        }
-
-        function showQrSaveModal() {
-            var modal = document.getElementById('qrSaveModal');
-            if (modal) modal.style.display = 'flex';
-        }
-
-        function closeQrSaveModal() {
-            var modal = document.getElementById('qrSaveModal');
-            if (modal) modal.style.display = 'none';
-        }
 
         // Auto-focus the mobile input
         mobileInput.focus();
