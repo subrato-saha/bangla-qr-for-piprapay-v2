@@ -1,0 +1,6 @@
+{
+  "type": "plugins",
+  "slug": "bangla-qr",
+  "name": "Bangla QR",
+  "mrdr": "payment-gateway"
+}
