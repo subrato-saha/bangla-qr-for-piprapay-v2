@@ -248,9 +248,10 @@
             display: flex; align-items: center; justify-content: space-between;
             margin-bottom: 1.25rem;
             gap: 12px;
+            flex-wrap: nowrap;
         }
 
-        .merchant-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+        .merchant-brand { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
 
         .merchant-logo {
             width: 46px; height: 46px; border-radius: 12px;
@@ -264,6 +265,12 @@
             margin-bottom: 2px;
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
+        
+        .summary-amount-box {
+            text-align: right;
+            flex-shrink: 0;
+        }
+
         .payable-amount {
             font-size: 1.45rem; font-weight: 800; color: var(--primary-color);
             text-align: right; white-space: nowrap;
@@ -402,14 +409,14 @@
         .auto-status-card {
             background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
             border: 1px solid #86efac; border-radius: 14px;
-            padding: 1rem 1.25rem; display: flex; align-items: center;
-            gap: 14px; margin-bottom: 1.25rem;
+            padding: 0.75rem 1.15rem; display: flex; align-items: center;
+            gap: 12px; margin-bottom: 1.25rem;
         }
 
         .auto-status-radar {
-            width: 42px; height: 42px; border-radius: 50%;
+            width: 36px; height: 36px; border-radius: 50%;
             background: #ffffff; display: flex; align-items: center; justify-content: center;
-            color: #16a34a; font-size: 1.3rem;
+            color: #16a34a; font-size: 1.15rem;
             box-shadow: 0 2px 8px rgba(22, 163, 74, 0.15);
             position: relative; flex-shrink: 0;
         }
@@ -425,8 +432,8 @@
             100% { transform: scale(1.8); opacity: 0; }
         }
 
-        .auto-status-text { font-size: 0.85rem; color: #166534; line-height: 1.4; }
-        .auto-status-text strong { display: block; color: #14532d; font-size: 0.95rem; margin-bottom: 1px; }
+        .auto-status-text { font-size: 0.78rem; color: #166534; line-height: 1.35; }
+        .auto-status-text strong { display: block; color: #14532d; font-size: 0.86rem; margin-bottom: 1px; }
 
         .qr-card-container {
             background: #ffffff; border: 2px dashed #cbd5e1;
@@ -592,17 +599,23 @@
                 padding: 0.85rem 1rem;
                 border-radius: 12px;
                 margin-bottom: 1rem;
+                flex-direction: row !important;
+                align-items: center;
+                justify-content: space-between;
+                flex-wrap: nowrap !important;
+                gap: 10px;
             }
             .merchant-logo {
-                width: 40px;
-                height: 40px;
+                width: 38px;
+                height: 38px;
                 border-radius: 10px;
             }
             .merchant-name {
-                font-size: 0.92rem;
+                font-size: 0.9rem;
+                max-width: 140px;
             }
             .payable-amount {
-                font-size: 1.25rem;
+                font-size: 1.15rem;
             }
             .mobile-icon-circle {
                 width: 65px;
@@ -654,21 +667,22 @@
                 font-size: 0.95rem;
             }
             .auto-status-card {
-                padding: 0.75rem 0.85rem;
+                padding: 0.65rem 0.8rem;
                 gap: 10px;
                 border-radius: 12px;
                 margin-bottom: 1rem;
             }
             .auto-status-radar {
-                width: 36px;
-                height: 36px;
-                font-size: 1.1rem;
+                width: 32px;
+                height: 32px;
+                font-size: 1rem;
             }
             .auto-status-text {
-                font-size: 0.8rem;
+                font-size: 0.75rem;
+                line-height: 1.3;
             }
             .auto-status-text strong {
-                font-size: 0.88rem;
+                font-size: 0.82rem;
             }
             .qr-card-container {
                 padding: 1rem 0.75rem;
@@ -738,15 +752,31 @@
                 padding: 0.85rem 0.65rem;
             }
             .summary-card {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 8px;
+                padding: 0.65rem 0.7rem;
+                flex-direction: row !important;
+                align-items: center;
+                justify-content: space-between;
+                flex-wrap: nowrap !important;
+                gap: 6px;
             }
-            .payable-amount, .amount-subtext {
-                text-align: left;
+            .merchant-logo {
+                width: 32px;
+                height: 32px;
+            }
+            .merchant-name {
+                font-size: 0.8rem;
+                max-width: 95px;
+            }
+            .merchant-brand small {
+                font-size: 0.68rem;
             }
             .payable-amount {
-                font-size: 1.15rem;
+                font-size: 0.98rem;
+                text-align: right;
+            }
+            .amount-subtext {
+                font-size: 0.65rem;
+                text-align: right;
             }
             .mobile-field-wrapper .country-prefix {
                 left: 0.6rem;
@@ -755,6 +785,22 @@
             .mobile-input-field {
                 padding: 0.8rem 0.5rem 0.8rem 4rem;
                 font-size: 0.98rem;
+            }
+            .auto-status-card {
+                padding: 0.55rem 0.75rem;
+                gap: 8px;
+            }
+            .auto-status-radar {
+                width: 28px;
+                height: 28px;
+                font-size: 0.9rem;
+            }
+            .auto-status-text {
+                font-size: 0.72rem;
+                line-height: 1.25;
+            }
+            .auto-status-text strong {
+                font-size: 0.78rem;
             }
             .qr-image-display {
                 width: 160px;
@@ -785,12 +831,12 @@
             <div class="summary-card">
                 <div class="merchant-brand">
                     <img src="<?php if(isset($setting['response'][0]['favicon']) && $setting['response'][0]['favicon'] !== "--"){echo htmlspecialchars($setting['response'][0]['favicon']);}else{echo 'https://cdn.piprapay.com/media/favicon.png';}?>" alt="Merchant Logo" class="merchant-logo">
-                    <div>
+                    <div style="min-width: 0; flex: 1;">
                         <div class="merchant-name"><?php echo htmlspecialchars($settings['merchant_name'] ?? $setting['response'][0]['site_name'] ?? 'Merchant') ?></div>
-                        <small class="text-muted"><i class="bi bi-shield-check text-success me-1"></i>Bangla QR Verified</small>
+                        <small class="text-muted" style="white-space: nowrap;"><i class="bi bi-shield-check text-success me-1"></i>Bangla QR Verified</small>
                     </div>
                 </div>
-                <div>
+                <div class="summary-amount-box">
                     <div class="payable-amount"><?php echo number_format($total_payable, 2).' '.$currency ?></div>
                     <div class="amount-subtext">Total Payable</div>
                 </div>
