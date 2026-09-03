@@ -7,7 +7,7 @@
     $plugin_base_url = pp_get_site_url() . '/pp-content/plugins/' . $plugin_dir_name . '/' . $plugin_slug;
 ?>
 
-<form id="smtpSettingsForm" method="post" action="">
+<form id="smtpSettingsForm" method="post" action="" onsubmit="return handleAdminSettingsSubmit(event, this);">
     <!-- Page Header -->
     <div class="page-header">
       <div class="row align-items-end">
@@ -184,12 +184,12 @@
     const pluginUploadUrl = '<?php echo $plugin_base_url . "/upload.php"; ?>';
 
     // Direct Instant Upload to upload.php as soon as file is chosen
-    document.getElementById('qr_file_input').addEventListener('change', function(e) {
+    $(document).off('change', '#qr_file_input').on('change', '#qr_file_input', function(e) {
         const file = e.target.files[0];
         if (!file) return;
 
         const alertBox = document.getElementById('upload_alert');
-        alertBox.innerHTML = '<div class="alert alert-info py-2 mb-2"><span class="spinner-border spinner-border-sm me-2"></span>Uploading QR to server assets...</div>';
+        if (alertBox) alertBox.innerHTML = '<div class="alert alert-info py-2 mb-2"><span class="spinner-border spinner-border-sm me-2"></span>Uploading QR to server assets...</div>';
 
         const formData = new FormData();
         formData.append('qr_file', file);
@@ -203,48 +203,74 @@
             dataType: 'json',
             success: function(res) {
                 if (res && res.status) {
-                    alertBox.innerHTML = '<div class="alert alert-success py-2 mb-2"><i class="bi bi-check-circle me-1"></i>' + res.message + '</div>';
+                    if (alertBox) alertBox.innerHTML = '<div class="alert alert-success py-2 mb-2"><i class="bi bi-check-circle me-1"></i>' + res.message + '</div>';
                     // Update preview with fresh timestamp cache-buster
                     const reader = new FileReader();
                     reader.onload = function(evt) {
-                        document.getElementById('admin_qr_preview').src = evt.target.result;
+                        const preview = document.getElementById('admin_qr_preview');
+                        if (preview) preview.src = evt.target.result;
                     };
                     reader.readAsDataURL(file);
                 } else {
-                    alertBox.innerHTML = '<div class="alert alert-danger py-2 mb-2">' + (res.message || 'Upload failed') + '</div>';
+                    if (alertBox) alertBox.innerHTML = '<div class="alert alert-danger py-2 mb-2">' + (res && res.message ? res.message : 'Upload failed') + '</div>';
                 }
             },
-            error: function(xhr) {
-                alertBox.innerHTML = '<div class="alert alert-danger py-2 mb-2">Upload failed. Please check folder permissions.</div>';
+            error: function() {
+                if (alertBox) alertBox.innerHTML = '<div class="alert alert-danger py-2 mb-2">Upload failed. Please check folder permissions.</div>';
             }
         });
     });
 
-    $(document).ready(function() {
-        $('#smtpSettingsForm').on('submit', function(e) {
-            e.preventDefault();
-    
-            document.querySelector(".btn-primary-add").innerHTML = '<div class="spinner-border text-light spinner-border-sm" role="status"> <span class="visually-hidden">Loading...</span> </div>';
-            
-            $.ajax({
-                url: $(this).attr('action'),
-                type: 'POST',
-                data: $(this).serialize(),
-                dataType: 'json',
-                success: function(response) {
-                    document.querySelector(".btn-primary-add").innerHTML = 'Save Settings';
-                    
-                    if(response.status) {
-                        $('#ajaxResponse').addClass('alert alert-success mb-3').html(response.message);
-                    } else {
-                        $('#ajaxResponse').addClass('alert alert-danger mb-3').html(response.message);
-                    }
-                },
-                error: function() {
-                    document.querySelector(".btn-primary-add").innerHTML = 'Save Settings';
-                    $('#ajaxResponse').addClass('alert alert-danger mb-3').html('An error occurred. Please try again.');
+    // Form submission handler that works across SPA / PJAX / Dynamic Views / First visits
+    window.handleAdminSettingsSubmit = function(e, form) {
+        if (e && e.preventDefault) e.preventDefault();
+
+        const $form = $(form || '#smtpSettingsForm');
+        const submitBtn = document.querySelector(".btn-primary-add");
+        
+        if (submitBtn) {
+            submitBtn.innerHTML = '<div class="spinner-border text-light spinner-border-sm" role="status"> <span class="visually-hidden">Loading...</span> </div>';
+            submitBtn.disabled = true;
+        }
+        
+        const targetUrl = $form.attr('action') || window.location.href;
+
+        $.ajax({
+            url: targetUrl,
+            type: 'POST',
+            data: $form.serialize(),
+            dataType: 'json',
+            success: function(response) {
+                if (submitBtn) {
+                    submitBtn.innerHTML = 'Save Settings';
+                    submitBtn.disabled = false;
                 }
-            });
+                
+                if (response && response.status) {
+                    $('#ajaxResponse').attr('class', 'alert alert-success mb-3').html(response.message || 'Settings saved successfully!');
+                } else {
+                    $('#ajaxResponse').attr('class', 'alert alert-danger mb-3').html((response && response.message) || 'Failed to save settings.');
+                }
+            },
+            error: function(xhr) {
+                if (submitBtn) {
+                    submitBtn.innerHTML = 'Save Settings';
+                    submitBtn.disabled = false;
+                }
+                let msg = 'An error occurred. Please try again.';
+                try {
+                    const parsed = JSON.parse(xhr.responseText);
+                    if (parsed && parsed.message) msg = parsed.message;
+                } catch(err){}
+                $('#ajaxResponse').attr('class', 'alert alert-danger mb-3').html(msg);
+            }
         });
+
+        return false;
+    };
+
+    // Attach submit event listener directly on document
+    $(document).off('submit', '#smtpSettingsForm').on('submit', '#smtpSettingsForm', function(e) {
+        return handleAdminSettingsSubmit(e, this);
     });
 </script>

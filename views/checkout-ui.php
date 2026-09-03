@@ -557,6 +557,30 @@
             100% { transform: scale(1); opacity: 1; }
         }
 
+        /* QR Save Modal (Flutter WebView & Mobile) */
+        .qr-save-modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(3px);
+            z-index: 10000;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+        }
+
+        .qr-save-content {
+            background: #ffffff;
+            border-radius: 18px;
+            max-width: 320px;
+            width: 100%;
+            padding: 1.25rem;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+            text-align: center;
+            animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
         /* Slide transition */
         .slide-out { animation: slideOut 0.35s ease forwards; }
         .slide-in  { animation: slideIn  0.35s ease forwards; }
@@ -922,9 +946,9 @@
                     </div>
 
                     <div>
-                        <a href="<?php echo htmlspecialchars($download_image_url) ?>" download="BanglaQR_Payment_<?php echo $payment_id ?>.jpg" id="btnDownloadQr" class="btn-download-qr" target="_blank">
+                        <button type="button" id="btnDownloadQr" class="btn-download-qr" onclick="downloadOrSaveQr(event)">
                             <i class="bi bi-download"></i> Download QR (For Gallery Scan)
-                        </a>
+                        </button>
                     </div>
 
                     <div class="supported-apps-strip">
@@ -989,6 +1013,27 @@
         <p class="text-muted mb-4" id="successMessage">Your payment has been verified successfully.</p>
         <div class="spinner-border text-primary spinner-border-sm" role="status"></div>
         <span class="text-muted small mt-2">Redirecting to receipt...</span>
+    </div>
+ 
+    <!-- Save QR Modal (For Flutter WebView & Mobile Browsers) -->
+    <div class="qr-save-modal" id="qrSaveModal" onclick="if(event.target===this) closeQrSaveModal();">
+        <div class="qr-save-content">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h6 class="fw-bold mb-0 text-dark" style="font-size: 0.95rem;">
+                    <i class="bi bi-download text-primary me-1"></i> Save to Gallery
+                </h6>
+                <button type="button" class="btn-close" style="font-size: 0.75rem;" onclick="closeQrSaveModal()"></button>
+            </div>
+            <p class="text-muted small mb-2" style="font-size: 0.8rem; line-height: 1.4;">
+                Tap &amp; hold (long press) the QR code below, then tap <strong>"Save image"</strong> or <strong>"Download image"</strong>.
+            </p>
+            <div class="text-center my-2">
+                <img src="<?php echo htmlspecialchars($qr_image_url) ?>" class="rounded border p-1" style="max-width: 170px; height: auto;" alt="QR Code">
+            </div>
+            <button type="button" class="btn btn-sm btn-primary w-100 py-2 rounded-pill mt-2 fw-semibold" onclick="closeQrSaveModal()">
+                Done
+            </button>
+        </div>
     </div>
 
     <!-- Bootstrap JS -->
@@ -1170,6 +1215,61 @@
         }
 
         tickTimer();
+
+        // ── QR Download & Save Handler (Flutter WebView & Mobile Safe) ──
+        async function downloadOrSaveQr(e) {
+            if (e && e.preventDefault) e.preventDefault();
+
+            var qrUrl = "<?php echo htmlspecialchars($download_image_url) ?>";
+            var fileName = "BanglaQR_Payment_<?php echo $payment_id ?>.jpg";
+
+            // 1. Try Web Share API with File (Native Share / Save sheet in mobile WebViews)
+            try {
+                var res = await fetch(qrUrl);
+                var blob = await res.blob();
+
+                if (navigator.share && navigator.canShare) {
+                    var file = new File([blob], fileName, { type: blob.type || 'image/jpeg' });
+                    if (navigator.canShare({ files: [file] })) {
+                        await navigator.share({
+                            files: [file],
+                            title: 'Bangla QR Code',
+                            text: 'Scan this Bangla QR to pay'
+                        });
+                        return;
+                    }
+                }
+
+                // 2. Programmatic Blob download (works in regular desktop & mobile browsers)
+                var blobUrl = window.URL.createObjectURL(blob);
+                var tempLink = document.createElement('a');
+                tempLink.style.display = 'none';
+                tempLink.href = blobUrl;
+                tempLink.download = fileName;
+                document.body.appendChild(tempLink);
+                tempLink.click();
+                setTimeout(function() {
+                    window.URL.revokeObjectURL(blobUrl);
+                    document.body.removeChild(tempLink);
+                }, 1000);
+
+                // In case WebView restricts automatic file downloads, also show visual guidance
+                showQrSaveModal();
+            } catch (err) {
+                // In restricted Flutter WebView, open modal so user can easily long-press to save
+                showQrSaveModal();
+            }
+        }
+
+        function showQrSaveModal() {
+            var modal = document.getElementById('qrSaveModal');
+            if (modal) modal.style.display = 'flex';
+        }
+
+        function closeQrSaveModal() {
+            var modal = document.getElementById('qrSaveModal');
+            if (modal) modal.style.display = 'none';
+        }
 
         // Auto-focus the mobile input
         mobileInput.focus();
