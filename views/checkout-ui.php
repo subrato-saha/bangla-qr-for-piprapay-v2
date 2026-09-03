@@ -171,11 +171,17 @@
 
         * { box-sizing: border-box; }
 
+        html, body {
+            max-width: 100%;
+            overflow-x: hidden;
+        }
+
         body {
             font-family: 'Inter', sans-serif;
             background-color: #f1f5f9;
             color: var(--text-dark);
             min-height: 100vh;
+            min-height: 100dvh;
             display: flex;
             flex-direction: column;
             justify-content: center;
@@ -208,6 +214,7 @@
             display: flex; align-items: center; justify-content: center;
             background: #f1f5f9; color: var(--text-dark);
             text-decoration: none; cursor: pointer; transition: all 0.2s; border: none;
+            flex-shrink: 0;
         }
         .back-btn:hover { background: #e2e8f0; transform: translateX(-2px); }
 
@@ -217,12 +224,14 @@
             padding: 7px 14px; border-radius: 30px;
             font-weight: 700; font-size: 0.92rem;
             border: 1px solid rgba(244, 42, 65, 0.2);
+            white-space: nowrap;
         }
 
         .timer-pulse {
             width: 10px; height: 10px;
             background-color: #d63031; border-radius: 50%;
             display: inline-block; animation: pulse-animation 1.5s infinite;
+            flex-shrink: 0;
         }
 
         @keyframes pulse-animation {
@@ -238,19 +247,28 @@
             border-radius: 14px; padding: 1.1rem 1.25rem;
             display: flex; align-items: center; justify-content: space-between;
             margin-bottom: 1.25rem;
+            gap: 12px;
         }
 
-        .merchant-brand { display: flex; align-items: center; gap: 12px; }
+        .merchant-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
 
         .merchant-logo {
             width: 46px; height: 46px; border-radius: 12px;
             object-fit: cover; background: #fff; padding: 4px;
             border: 1px solid #e2e8f0;
+            flex-shrink: 0;
         }
 
-        .merchant-name { font-weight: 700; font-size: 1rem; color: var(--text-dark); margin-bottom: 2px; }
-        .payable-amount { font-size: 1.45rem; font-weight: 800; color: var(--primary-color); text-align: right; }
-        .amount-subtext { font-size: 0.75rem; color: var(--text-muted); text-align: right; font-weight: 500; }
+        .merchant-name {
+            font-weight: 700; font-size: 1rem; color: var(--text-dark);
+            margin-bottom: 2px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .payable-amount {
+            font-size: 1.45rem; font-weight: 800; color: var(--primary-color);
+            text-align: right; white-space: nowrap;
+        }
+        .amount-subtext { font-size: 0.75rem; color: var(--text-muted); text-align: right; font-weight: 500; white-space: nowrap; }
 
         /* ── STEP 1: Mobile Number Input Screen ── */
         .mobile-input-screen {
@@ -278,24 +296,25 @@
         }
 
         .mobile-field-wrapper {
-            position: relative; margin-bottom: 1rem;
+            position: relative; margin-bottom: 1rem; width: 100%;
         }
 
         .mobile-field-wrapper .country-prefix {
-            position: absolute; left: 1rem; top: 50%; transform: translateY(-50%);
-            font-size: 1.05rem; font-weight: 700; color: #334155;
-            display: flex; align-items: center; gap: 6px;
+            position: absolute; left: 0.9rem; top: 50%; transform: translateY(-50%);
+            font-size: 1rem; font-weight: 700; color: #334155;
+            display: flex; align-items: center; gap: 5px;
             pointer-events: none;
+            z-index: 2;
         }
 
         .mobile-field-wrapper .country-prefix img {
-            width: 24px; height: 16px; object-fit: cover; border-radius: 2px;
+            width: 22px; height: 15px; object-fit: cover; border-radius: 2px;
         }
 
         .mobile-input-field {
             width: 100%;
-            padding: 1rem 1rem 1rem 5rem;
-            font-size: 1.2rem; font-weight: 600; letter-spacing: 1px;
+            padding: 0.95rem 0.85rem 0.95rem 4.6rem;
+            font-size: 1.15rem; font-weight: 600; letter-spacing: 0.5px;
             border: 2px solid var(--card-border);
             border-radius: 14px;
             background: #f8fafc;
@@ -371,11 +390,13 @@
 
         .paying-from-text {
             font-size: 0.85rem; color: #1e40af; line-height: 1.4;
+            min-width: 0; flex: 1;
         }
         .paying-from-text strong { display: block; color: #1e3a5f; font-size: 0.95rem; }
         .paying-from-number {
             font-family: 'Inter', monospace; font-weight: 800;
             font-size: 1.05rem; color: #1d4ed8; letter-spacing: 0.5px;
+            word-break: break-all;
         }
 
         .auto-status-card {
@@ -425,14 +446,24 @@
             padding: 12px; border-radius: 16px;
             box-shadow: 0 6px 20px rgba(0,0,0,0.07);
             margin: 0.4rem 0; border: 1px solid #e2e8f0;
+            max-width: 100%;
         }
 
         .qr-image-display {
-            width: 220px; height: 220px; object-fit: contain;
+            width: 220px;
+            max-width: 100%;
+            height: auto;
+            aspect-ratio: 1 / 1;
+            object-fit: contain;
             border-radius: 10px; display: block;
+            margin: 0 auto;
         }
 
-        .qr-scan-guide { font-size: 0.88rem; color: var(--text-muted); margin-top: 0.5rem; font-weight: 600; }
+        .qr-scan-guide {
+            font-size: 0.88rem; color: var(--text-muted);
+            margin-top: 0.5rem; font-weight: 600;
+            word-break: break-word;
+        }
 
         .supported-apps-strip {
             background: #f8fafc; border-radius: 12px;
@@ -452,6 +483,7 @@
             padding: 0.6rem 1.2rem; border-radius: 30px;
             font-size: 0.85rem; font-weight: 600; cursor: pointer;
             text-decoration: none; transition: all 0.2s; margin-top: 0.65rem;
+            max-width: 100%;
         }
         .btn-download-qr:hover { background: #e2e8f0; color: var(--primary-color); border-color: #94a3b8; transform: translateY(-1px); }
 
@@ -478,6 +510,7 @@
         .step-content {
             flex: 1; display: flex; align-items: center;
             justify-content: space-between; flex-wrap: wrap; gap: 6px;
+            min-width: 0;
         }
 
         .copy-pill-btn {
@@ -485,6 +518,7 @@
             font-size: 0.78rem; font-weight: 600; padding: 3px 10px;
             border-radius: 8px; cursor: pointer; transition: all 0.2s;
             display: inline-flex; align-items: center; gap: 4px;
+            flex-shrink: 0;
         }
         .copy-pill-btn:hover { background: var(--primary-color); color: #fff; border-color: var(--primary-color); }
 
@@ -527,6 +561,204 @@
         @keyframes slideIn {
             0% { opacity: 0; transform: translateX(30px); }
             100% { opacity: 1; transform: translateX(0); }
+        }
+
+        /* ── COMPLETE MOBILE RESPONSIVE MEDIA QUERIES ── */
+        @media (max-width: 576px) {
+            body {
+                padding: 0.75rem 0.5rem;
+                justify-content: flex-start;
+            }
+            .payment-container {
+                border-radius: 16px;
+                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);
+            }
+            .payment-header {
+                padding: 0.85rem 1rem;
+            }
+            .back-btn {
+                width: 36px;
+                height: 36px;
+                font-size: 0.9rem;
+            }
+            .timer-badge {
+                padding: 6px 11px;
+                font-size: 0.82rem;
+            }
+            .payment-body {
+                padding: 1rem 0.85rem;
+            }
+            .summary-card {
+                padding: 0.85rem 1rem;
+                border-radius: 12px;
+                margin-bottom: 1rem;
+            }
+            .merchant-logo {
+                width: 40px;
+                height: 40px;
+                border-radius: 10px;
+            }
+            .merchant-name {
+                font-size: 0.92rem;
+            }
+            .payable-amount {
+                font-size: 1.25rem;
+            }
+            .mobile-icon-circle {
+                width: 65px;
+                height: 65px;
+                font-size: 1.6rem;
+                margin-bottom: 1rem;
+            }
+            .mobile-input-title {
+                font-size: 1.05rem;
+            }
+            .mobile-input-desc {
+                font-size: 0.82rem;
+                margin-bottom: 1.25rem;
+            }
+            .mobile-field-wrapper .country-prefix {
+                left: 0.75rem;
+                font-size: 0.95rem;
+            }
+            .mobile-field-wrapper .country-prefix img {
+                width: 20px;
+                height: 14px;
+            }
+            .mobile-input-field {
+                padding: 0.85rem 0.75rem 0.85rem 4.3rem;
+                font-size: 1.05rem;
+                border-radius: 12px;
+                letter-spacing: 0.5px;
+            }
+            .btn-continue-payment {
+                padding: 0.85rem 1rem;
+                font-size: 0.95rem;
+                border-radius: 12px;
+            }
+            .paying-from-banner {
+                padding: 0.75rem 0.85rem;
+                gap: 10px;
+                border-radius: 12px;
+                margin-bottom: 1rem;
+            }
+            .paying-from-icon {
+                width: 34px;
+                height: 34px;
+                font-size: 1rem;
+            }
+            .paying-from-text strong {
+                font-size: 0.88rem;
+            }
+            .paying-from-number {
+                font-size: 0.95rem;
+            }
+            .auto-status-card {
+                padding: 0.75rem 0.85rem;
+                gap: 10px;
+                border-radius: 12px;
+                margin-bottom: 1rem;
+            }
+            .auto-status-radar {
+                width: 36px;
+                height: 36px;
+                font-size: 1.1rem;
+            }
+            .auto-status-text {
+                font-size: 0.8rem;
+            }
+            .auto-status-text strong {
+                font-size: 0.88rem;
+            }
+            .qr-card-container {
+                padding: 1rem 0.75rem;
+                border-radius: 14px;
+                margin-bottom: 1rem;
+            }
+            .qr-image-wrapper {
+                padding: 8px;
+                border-radius: 12px;
+            }
+            .qr-image-display {
+                width: 190px;
+                max-width: 100%;
+                height: auto;
+            }
+            .qr-scan-guide {
+                font-size: 0.82rem;
+            }
+            .btn-download-qr {
+                width: 100%;
+                max-width: 300px;
+                font-size: 0.8rem;
+                padding: 0.55rem 0.8rem;
+                white-space: normal;
+                border-radius: 25px;
+            }
+            .supported-apps-strip {
+                padding: 0.5rem 0.6rem;
+                gap: 4px;
+            }
+            .app-pill {
+                padding: 2px 7px;
+                font-size: 0.72rem;
+            }
+            .instruction-list {
+                border-radius: 12px;
+                margin-bottom: 1rem;
+            }
+            .instruction-item {
+                padding: 0.7rem 0.75rem;
+                font-size: 0.82rem;
+            }
+            .step-number {
+                width: 22px;
+                height: 22px;
+                font-size: 0.72rem;
+                margin-right: 8px;
+            }
+            .payment-footer {
+                padding: 0.9rem 1rem;
+                font-size: 0.75rem;
+            }
+        }
+
+        @media (max-width: 380px) {
+            body {
+                padding: 0.5rem 0.25rem;
+            }
+            .payment-header {
+                padding: 0.75rem 0.85rem;
+            }
+            .timer-badge {
+                padding: 5px 9px;
+                font-size: 0.78rem;
+            }
+            .payment-body {
+                padding: 0.85rem 0.65rem;
+            }
+            .summary-card {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 8px;
+            }
+            .payable-amount, .amount-subtext {
+                text-align: left;
+            }
+            .payable-amount {
+                font-size: 1.15rem;
+            }
+            .mobile-field-wrapper .country-prefix {
+                left: 0.6rem;
+                font-size: 0.9rem;
+            }
+            .mobile-input-field {
+                padding: 0.8rem 0.5rem 0.8rem 4rem;
+                font-size: 0.98rem;
+            }
+            .qr-image-display {
+                width: 160px;
+            }
         }
     </style>
 </head>
