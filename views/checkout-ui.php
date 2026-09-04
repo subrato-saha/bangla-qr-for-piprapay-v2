@@ -60,23 +60,29 @@
 
         // 2. Get customer mobile number from POST
         $customer_mobile = trim($_POST['customer_mobile'] ?? '');
-        if (empty($customer_mobile) || strlen($customer_mobile) < 10) {
+        $clean_mobile = preg_replace('/[^0-9]/', '', $customer_mobile);
+        if (strpos($clean_mobile, '8801') === 0 && strlen($clean_mobile) >= 13) {
+            $clean_mobile = substr($clean_mobile, 2);
+        }
+
+        if (empty($clean_mobile) || strlen($clean_mobile) < 11) {
             echo json_encode([
                 "status" => "false",
                 "completed" => false,
-                "message" => "Mobile number required for verification."
+                "message" => "Valid mobile number required for verification."
             ]);
             exit();
         }
 
-        // 3. Mask the mobile number: keep first 3 + last 4, middle = ****
-        $clean_mobile = preg_replace('/[^0-9]/', '', $customer_mobile);
-        $mobile_prefix = substr($clean_mobile, 0, 3);  // e.g. "014"
-        $mobile_suffix = substr($clean_mobile, -4);     // e.g. "6340"
+        // Primary 11-digit mobile components
+        $user_mobile_11 = substr($clean_mobile, 0, 11);
+        $user_prefix_3  = substr($user_mobile_11, 0, 3);
+        $user_suffix_4  = substr($user_mobile_11, -4);
+        $user_suffix_3  = substr($user_mobile_11, -3);
 
-        // 4. Time filter
+        // 4. Time filter (allow 3 minutes grace before transaction creation)
         $tx_time = !empty($current_tx['response'][0]['created_at']) ? strtotime($current_tx['response'][0]['created_at']) : time();
-        $min_sms_timestamp = $tx_time - 60;
+        $min_sms_timestamp = $tx_time - 180;
         $min_sms_datetime = date('Y-m-d H:i:s', $min_sms_timestamp);
 
         $min_val = (float)$total_payable - 0.5;
@@ -87,14 +93,13 @@
         $comma_str = number_format($total_payable, 2);
 
         // 5. Query recent unused SMS
-        $all_recent_sms = json_decode(getData($db_prefix . 'sms_data', "WHERE LOWER(status) != 'used' AND (created_at >= '$min_sms_datetime' OR created_at IS NULL OR created_at = '0000-00-00 00:00:00') ORDER BY id DESC LIMIT 20"), true);
+        $all_recent_sms = json_decode(getData($db_prefix . 'sms_data', "WHERE LOWER(status) != 'used' AND (created_at >= '$min_sms_datetime' OR created_at IS NULL OR created_at = '0000-00-00 00:00:00') ORDER BY id DESC LIMIT 30"), true);
 
         $matched_sms = null;
         if ($all_recent_sms['status'] == true && !empty($all_recent_sms['response'])) {
             foreach ($all_recent_sms['response'] as $row) {
                 $sms_amt = (float)($row['amount'] ?? 0);
                 $sms_status = strtolower($row['status'] ?? '');
-                $sms_mobile = $row['mobile_number'] ?? ($row['sender'] ?? '');
 
                 // Check amount match
                 $amount_match = ($sms_status !== 'used' && (
@@ -106,13 +111,95 @@
 
                 if (!$amount_match) continue;
 
-                // Check mobile number match (masked pattern)
-                // SMS mobile is like "014****6340" — match first 3 and last 4
-                $sms_clean = preg_replace('/[^0-9*]/', '', $sms_mobile);
-                $sms_prefix = substr($sms_clean, 0, 3);
-                $sms_suffix = substr($sms_clean, -4);
+                // Check mobile number match:
+                // Supports:
+                // 1. Unmasked 11-digit numbers (bKash/Nagad/Upay, e.g. 01767262645)
+                // 2. Unmasked 12-digit numbers (Rocket merchant format with 12th check digit, e.g. 017672626451)
+                // 3. Masked 11-digit numbers (e.g. 017****2645)
+                // 4. Masked 12-digit Rocket numbers (e.g. 017****6451 or 017***26451)
+                // 5. Raw SMS text / tab-separated lines containing the mobile number
+                $search_texts = [];
+                if (!empty($row['mobile_number'])) $search_texts[] = (string)$row['mobile_number'];
+                if (!empty($row['sender']))        $search_texts[] = (string)$row['sender'];
+                if (!empty($row['sms_text']))      $search_texts[] = (string)$row['sms_text'];
+                if (!empty($row['message']))       $search_texts[] = (string)$row['message'];
+                if (!empty($row['raw_sms']))       $search_texts[] = (string)$row['raw_sms'];
 
-                if ($sms_prefix === $mobile_prefix && $sms_suffix === $mobile_suffix) {
+                $is_matched = false;
+                foreach ($search_texts as $text) {
+                    $text = trim($text);
+                    if ($text === '') continue;
+
+                    // A. Regex check for BD mobile sequence (11 or 12 digits) in text
+                    if (preg_match_all('/(?:(?:\+?88)?)(01[3-9]\d{8})(\d)?\b/', $text, $matches, PREG_SET_ORDER)) {
+                        foreach ($matches as $m) {
+                            if ($m[1] === $user_mobile_11) {
+                                $is_matched = true;
+                                break 2;
+                            }
+                        }
+                    }
+
+                    // B. Clean digits unmasked comparison
+                    $clean_digits = preg_replace('/[^0-9]/', '', $text);
+                    if (strpos($clean_digits, '8801') === 0 && strlen($clean_digits) >= 13) {
+                        $clean_digits = substr($clean_digits, 2);
+                    }
+
+                    // Exact 11 or 12 digit match
+                    if ($clean_digits === $clean_mobile || $clean_digits === $user_mobile_11) {
+                        $is_matched = true;
+                        break;
+                    }
+
+                    // Rocket 12-digit unmasked where first 11 digits match user input
+                    if (strlen($clean_digits) === 12 && substr($clean_digits, 0, 11) === $user_mobile_11) {
+                        $is_matched = true;
+                        break;
+                    }
+
+                    if (strlen($clean_digits) >= 11 && strpos($clean_digits, $user_mobile_11) === 0) {
+                        $is_matched = true;
+                        break;
+                    }
+
+                    // C. Masked number comparison (contains * or x)
+                    if (strpos($text, '*') !== false || stripos($text, 'x') !== false) {
+                        $clean_masked = preg_replace('/[^0-9*xX]/', '', $text);
+                        if (strpos($clean_masked, '8801') === 0) {
+                            $clean_masked = substr($clean_masked, 2);
+                        }
+                        $m_prefix = substr($clean_masked, 0, 3);
+
+                        if ($m_prefix === $user_prefix_3) {
+                            $m_suffix_4 = substr($clean_masked, -4);
+
+                            // Standard 11-digit masked (017****2645)
+                            if ($m_suffix_4 === $user_suffix_4) {
+                                $is_matched = true;
+                                break;
+                            }
+
+                            // Rocket 12-digit masked ending with check digit (017****6451)
+                            $rocket_sub_3 = substr($clean_masked, -4, 3);
+                            if ($rocket_sub_3 === $user_suffix_3) {
+                                $is_matched = true;
+                                break;
+                            }
+
+                            // Rocket 12-digit masked with 5 visible tail chars (017***26451)
+                            if (strlen($clean_masked) >= 5) {
+                                $rocket_sub_4 = substr($clean_masked, -5, 4);
+                                if ($rocket_sub_4 === $user_suffix_4) {
+                                    $is_matched = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if ($is_matched) {
                     $matched_sms = $row;
                     break;
                 }
@@ -121,7 +208,23 @@
 
         if ($matched_sms !== null) {
             $sms_id = $matched_sms['id'];
-            $sms_trxid = !empty($matched_sms['transaction_id']) ? $matched_sms['transaction_id'] : ('BQR' . time());
+            $sms_trxid = !empty($matched_sms['transaction_id']) ? $matched_sms['transaction_id'] : '';
+
+            if (empty($sms_trxid)) {
+                // If transaction_id column was empty, attempt extraction from SMS text
+                $sms_full_text = ($matched_sms['sms_text'] ?? '') . ' ' . ($matched_sms['message'] ?? '') . ' ' . ($matched_sms['raw_sms'] ?? '');
+                if (preg_match('/(?:TxnId|TrxID|Trx\s*Id|TrxID:|TxnID:)\s*[:#]?\s*([A-Za-z0-9]+)/i', $sms_full_text, $trx_match)) {
+                    $sms_trxid = $trx_match[1];
+                } elseif (preg_match('/\t([0-9]{8,15})\t/', $sms_full_text, $tab_match)) {
+                    // e.g. Rocket tab format: MD MONIR ISLAM\tRocket merchant\t10.00 BDT\t017672626451\t6910317462\t...
+                    $sms_trxid = $tab_match[1];
+                } elseif (preg_match('/(?:[0-9]{11,12})\s+([0-9]{8,15})\b/', $sms_full_text, $seq_match)) {
+                    $sms_trxid = $seq_match[1];
+                } else {
+                    $sms_trxid = 'BQR' . time();
+                }
+            }
+
             $sms_sender = !empty($matched_sms['mobile_number']) ? $matched_sms['mobile_number'] : (!empty($matched_sms['sender']) ? $matched_sms['sender'] : $customer_mobile);
 
             if (pp_set_transaction_byid($payment_id, $plugin_slug, $plugin_info['plugin_name'] ?? 'Bangla QR', $sms_sender, $sms_trxid, 'completed', $sms_id)) {
@@ -859,10 +962,10 @@
                         <img src="https://flagcdn.com/w40/bd.png" alt="BD">
                         +88
                     </div>
-                    <input type="tel" class="mobile-input-field" id="customerMobile" placeholder="01XXXXXXXXX" maxlength="11" autocomplete="tel" inputmode="numeric">
+                    <input type="tel" class="mobile-input-field" id="customerMobile" placeholder="01XXXXXXXXX" maxlength="12" autocomplete="tel" inputmode="numeric">
                     <div class="mobile-error" id="mobileError">
                         <i class="bi bi-exclamation-circle me-1"></i>
-                        <span id="mobileErrorText">Please enter a valid 11-digit mobile number</span>
+                        <span id="mobileErrorText">Please enter a valid 11 or 12 digit mobile number</span>
                     </div>
                 </div>
 
@@ -1047,7 +1150,7 @@
             var val = this.value.replace(/[^0-9]/g, '');
             this.value = val;
 
-            if (val.length === 11 && val.startsWith('01')) {
+            if ((val.length === 11 || val.length === 12) && val.startsWith('01')) {
                 btnContinue.disabled = false;
                 this.classList.remove('is-invalid');
                 mobileError.style.display = 'none';
@@ -1065,9 +1168,9 @@
         btnContinue.addEventListener('click', function() {
             var val = mobileInput.value.replace(/[^0-9]/g, '');
 
-            if (val.length !== 11 || !val.startsWith('01')) {
+            if ((val.length !== 11 && val.length !== 12) || !val.startsWith('01')) {
                 mobileInput.classList.add('is-invalid');
-                mobileErrorText.textContent = 'Please enter a valid 11-digit Bangladeshi mobile number starting with 01';
+                mobileErrorText.textContent = 'Please enter a valid 11 or 12 digit mobile number starting with 01';
                 mobileError.style.display = 'block';
                 return;
             }
