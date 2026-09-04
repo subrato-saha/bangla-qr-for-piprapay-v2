@@ -38,6 +38,24 @@
 
     $download_image_url = $qr_image_url;
 
+    // Check if the transaction is already completed on initial page load
+    $initial_tx_status = strtolower($transaction_details['response'][0]['transaction_status'] ?? '');
+    if ($initial_tx_status === 'completed' || $initial_tx_status === 'success' || $initial_tx_status === 'paid') {
+        header('Location: ' . pp_get_paymentlink($payment_id));
+        echo "<script>window.location.href='" . pp_get_paymentlink($payment_id) . "';</script>";
+        exit();
+    }
+
+    // Auto-detect customer mobile from transaction details if passed by merchant
+    $prefill_mobile_raw = $transaction_details['response'][0]['customer_mobile'] ?? ($transaction_details['response'][0]['customer_phone'] ?? ($transaction_details['response'][0]['phone'] ?? ''));
+    $prefill_clean = preg_replace('/[^0-9]/', '', (string)$prefill_mobile_raw);
+    if (strpos($prefill_clean, '8801') === 0 && strlen($prefill_clean) >= 13) {
+        $prefill_clean = substr($prefill_clean, 2);
+    }
+    if (strlen($prefill_clean) < 11 || strlen($prefill_clean) > 12) {
+        $prefill_clean = '';
+    }
+
     // ──────────────────────────────────────────────────────────
     // SECURE AUTOMATED SMS VERIFICATION WITH MOBILE NUMBER MATCHING
     // ──────────────────────────────────────────────────────────
@@ -80,11 +98,7 @@
         $user_suffix_4  = substr($user_mobile_11, -4);
         $user_suffix_3  = substr($user_mobile_11, -3);
 
-        // 4. Time filter (allow 3 minutes grace before transaction creation)
-        $tx_time = !empty($current_tx['response'][0]['created_at']) ? strtotime($current_tx['response'][0]['created_at']) : time();
-        $min_sms_timestamp = $tx_time - 180;
-        $min_sms_datetime = date('Y-m-d H:i:s', $min_sms_timestamp);
-
+        // 4. Amount matching bounds (tolerance ±0.5 BDT)
         $min_val = (float)$total_payable - 0.5;
         if ($min_val < 0) $min_val = 0;
         $max_val = (float)$total_payable + 0.5;
@@ -92,8 +106,9 @@
         $min_str = number_format($total_payable, 2, '.', '');
         $comma_str = number_format($total_payable, 2);
 
-        // 5. Query recent unused SMS
-        $all_recent_sms = json_decode(getData($db_prefix . 'sms_data', "WHERE LOWER(status) != 'used' AND (created_at >= '$min_sms_datetime' OR created_at IS NULL OR created_at = '0000-00-00 00:00:00') ORDER BY id DESC LIMIT 30"), true);
+        // 5. Query recent unused SMS (No strict time limit to prevent missing delayed SMS or timezone discrepancies)
+        // Orders by id DESC so newest incoming payments are evaluated first
+        $all_recent_sms = json_decode(getData($db_prefix . 'sms_data', "WHERE LOWER(status) != 'used' ORDER BY id DESC LIMIT 50"), true);
 
         $matched_sms = null;
         if ($all_recent_sms['status'] == true && !empty($all_recent_sms['response'])) {
@@ -962,7 +977,7 @@
                         <img src="https://flagcdn.com/w40/bd.png" alt="BD">
                         +88
                     </div>
-                    <input type="tel" class="mobile-input-field" id="customerMobile" placeholder="01XXXXXXXXX" maxlength="12" autocomplete="tel" inputmode="numeric">
+                    <input type="tel" class="mobile-input-field" id="customerMobile" placeholder="01XXXXXXXXX" maxlength="12" value="<?php echo htmlspecialchars($prefill_clean); ?>" autocomplete="tel" inputmode="numeric">
                     <div class="mobile-error" id="mobileError">
                         <i class="bi bi-exclamation-circle me-1"></i>
                         <span id="mobileErrorText">Please enter a valid 11 or 12 digit mobile number</span>
@@ -1158,6 +1173,14 @@
                 btnContinue.disabled = true;
             }
         });
+
+        // Enable continue button if pre-filled with valid number
+        if (mobileInput.value) {
+            var initVal = mobileInput.value.replace(/[^0-9]/g, '');
+            if ((initVal.length === 11 || initVal.length === 12) && initVal.startsWith('01')) {
+                btnContinue.disabled = false;
+            }
+        }
 
         mobileInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter' && !btnContinue.disabled) {
