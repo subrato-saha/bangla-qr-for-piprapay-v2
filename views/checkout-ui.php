@@ -169,13 +169,7 @@
                         $text = trim($text);
                         if ($text === '') continue;
 
-                        // Check 1: Direct TrxID match if user entered their Transaction ID
-                        if (!empty($row['transaction_id']) && $row['transaction_id'] === $clean_account) {
-                            $is_matched = true;
-                            break;
-                        }
-
-                        // Check 2: Masked card / account pattern in text: e.g. 10771****9394 or 01300000****4337
+                        // Check: Masked card / account pattern in text: e.g. 10771****9394 or 01300000****4337
                         if (preg_match_all('/(\d{3,10})[*xX]{3,8}(\d{4})/', $text, $card_matches, PREG_SET_ORDER)) {
                             foreach ($card_matches as $cm) {
                                 $card_prefix = $cm[1];
