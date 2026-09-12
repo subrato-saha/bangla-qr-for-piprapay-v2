@@ -76,27 +76,51 @@
             exit();
         }
 
-        // 2. Get customer mobile number from POST
-        $customer_mobile = trim($_POST['customer_mobile'] ?? '');
-        $clean_mobile = preg_replace('/[^0-9]/', '', $customer_mobile);
-        if (strpos($clean_mobile, '8801') === 0 && strlen($clean_mobile) >= 13) {
-            $clean_mobile = substr($clean_mobile, 2);
+        // 2. Determine payment type: 'mobile' (default) or 'card'
+        $payment_type = trim($_POST['payment_type'] ?? 'mobile');
+        if ($payment_type !== 'card') {
+            $payment_type = 'mobile';
         }
 
-        if (empty($clean_mobile) || strlen($clean_mobile) < 11) {
-            echo json_encode([
-                "status" => "false",
-                "completed" => false,
-                "message" => "Valid mobile number required for verification."
-            ]);
-            exit();
-        }
+        if ($payment_type === 'card') {
+            // Card / Bank Account verification (no phone validation required)
+            $customer_account = trim($_POST['customer_account'] ?? ($_POST['customer_mobile'] ?? ''));
+            $clean_account = preg_replace('/[^0-9]/', '', $customer_account);
 
-        // Primary 11-digit mobile components
-        $user_mobile_11 = substr($clean_mobile, 0, 11);
-        $user_prefix_3  = substr($user_mobile_11, 0, 3);
-        $user_suffix_4  = substr($user_mobile_11, -4);
-        $user_suffix_3  = substr($user_mobile_11, -3);
+            if (empty($clean_account) || strlen($clean_account) < 4) {
+                echo json_encode([
+                    "status" => "false",
+                    "completed" => false,
+                    "message" => "Valid Card or Account number (minimum 4 digits) required for verification."
+                ]);
+                exit();
+            }
+
+            $user_acc_suffix_4 = substr($clean_account, -4);
+            $user_acc_len = strlen($clean_account);
+        } else {
+            // Mobile Banking verification
+            $customer_mobile = trim($_POST['customer_mobile'] ?? '');
+            $clean_mobile = preg_replace('/[^0-9]/', '', $customer_mobile);
+            if (strpos($clean_mobile, '8801') === 0 && strlen($clean_mobile) >= 13) {
+                $clean_mobile = substr($clean_mobile, 2);
+            }
+
+            if (empty($clean_mobile) || strlen($clean_mobile) < 11) {
+                echo json_encode([
+                    "status" => "false",
+                    "completed" => false,
+                    "message" => "Valid mobile number required for verification."
+                ]);
+                exit();
+            }
+
+            // Primary 11-digit mobile components
+            $user_mobile_11 = substr($clean_mobile, 0, 11);
+            $user_prefix_3  = substr($user_mobile_11, 0, 3);
+            $user_suffix_4  = substr($user_mobile_11, -4);
+            $user_suffix_3  = substr($user_mobile_11, -3);
+        }
 
         // 4. Amount matching bounds (tolerance ±0.5 BDT)
         $min_val = (float)$total_payable - 0.5;
@@ -126,13 +150,7 @@
 
                 if (!$amount_match) continue;
 
-                // Check mobile number match:
-                // Supports:
-                // 1. Unmasked 11-digit numbers (bKash/Nagad/Upay, e.g. 01767262645)
-                // 2. Unmasked 12-digit numbers (Rocket merchant format with 12th check digit, e.g. 017672626451)
-                // 3. Masked 11-digit numbers (e.g. 017****2645)
-                // 4. Masked 12-digit Rocket numbers (e.g. 017****6451 or 017***26451)
-                // 5. Raw SMS text / tab-separated lines containing the mobile number
+                // Check payment matching based on payment_type
                 $search_texts = [];
                 if (!empty($row['mobile_number'])) $search_texts[] = (string)$row['mobile_number'];
                 if (!empty($row['sender']))        $search_texts[] = (string)$row['sender'];
@@ -141,73 +159,119 @@
                 if (!empty($row['raw_sms']))       $search_texts[] = (string)$row['raw_sms'];
 
                 $is_matched = false;
-                foreach ($search_texts as $text) {
-                    $text = trim($text);
-                    if ($text === '') continue;
 
-                    // A. Regex check for BD mobile sequence (11 or 12 digits) in text
-                    if (preg_match_all('/(?:(?:\+?88)?)(01[3-9]\d{8})(\d)?\b/', $text, $matches, PREG_SET_ORDER)) {
-                        foreach ($matches as $m) {
-                            if ($m[1] === $user_mobile_11) {
-                                $is_matched = true;
-                                break 2;
-                            }
+                if ($payment_type === 'card') {
+                    // ── CARD / BANK ACCOUNT MATCHING ──
+                    // Supports e.g.:
+                    // Automatic Rocket SIM 2 10771****9394 6925286912 400.00 8889.20
+                    // Bangla QR 01300000****4337 6912624747
+                    foreach ($search_texts as $text) {
+                        $text = trim($text);
+                        if ($text === '') continue;
+
+                        // Check 1: Direct TrxID match if user entered their Transaction ID
+                        if (!empty($row['transaction_id']) && $row['transaction_id'] === $clean_account) {
+                            $is_matched = true;
+                            break;
                         }
-                    }
 
-                    // B. Clean digits unmasked comparison
-                    $clean_digits = preg_replace('/[^0-9]/', '', $text);
-                    if (strpos($clean_digits, '8801') === 0 && strlen($clean_digits) >= 13) {
-                        $clean_digits = substr($clean_digits, 2);
-                    }
+                        // Check 2: Masked card / account pattern in text: e.g. 10771****9394 or 01300000****4337
+                        if (preg_match_all('/(\d{3,10})[*xX]{3,8}(\d{4})/', $text, $card_matches, PREG_SET_ORDER)) {
+                            foreach ($card_matches as $cm) {
+                                $card_prefix = $cm[1];
+                                $card_suffix = $cm[2];
 
-                    // Exact 11 or 12 digit match
-                    if ($clean_digits === $clean_mobile || $clean_digits === $user_mobile_11) {
-                        $is_matched = true;
-                        break;
-                    }
-
-                    // Rocket 12-digit unmasked where first 11 digits match user input
-                    if (strlen($clean_digits) === 12 && substr($clean_digits, 0, 11) === $user_mobile_11) {
-                        $is_matched = true;
-                        break;
-                    }
-
-                    if (strlen($clean_digits) >= 11 && strpos($clean_digits, $user_mobile_11) === 0) {
-                        $is_matched = true;
-                        break;
-                    }
-
-                    // C. Masked number comparison (contains * or x)
-                    if (strpos($text, '*') !== false || stripos($text, 'x') !== false) {
-                        $clean_masked = preg_replace('/[^0-9*xX]/', '', $text);
-                        if (strpos($clean_masked, '8801') === 0) {
-                            $clean_masked = substr($clean_masked, 2);
-                        }
-                        $m_prefix = substr($clean_masked, 0, 3);
-
-                        if ($m_prefix === $user_prefix_3) {
-                            $m_suffix_4 = substr($clean_masked, -4);
-
-                            // Standard 11-digit masked (017****2645)
-                            if ($m_suffix_4 === $user_suffix_4) {
-                                $is_matched = true;
-                                break;
-                            }
-
-                            // Rocket 12-digit masked ending with check digit (017****6451)
-                            $rocket_sub_3 = substr($clean_masked, -4, 3);
-                            if ($rocket_sub_3 === $user_suffix_3) {
-                                $is_matched = true;
-                                break;
-                            }
-
-                            // Rocket 12-digit masked with 5 visible tail chars (017***26451)
-                            if (strlen($clean_masked) >= 5) {
-                                $rocket_sub_4 = substr($clean_masked, -5, 4);
-                                if ($rocket_sub_4 === $user_suffix_4) {
+                                // User entered last 4 digits
+                                if ($user_acc_len === 4 && $clean_account === $card_suffix) {
                                     $is_matched = true;
-                                    break;
+                                    break 2;
+                                }
+
+                                // User entered longer or full card/account number
+                                if ($user_acc_suffix_4 === $card_suffix) {
+                                    if ($user_acc_len >= 8) {
+                                        if (strpos($clean_account, $card_prefix) === 0 || strpos($card_prefix, substr($clean_account, 0, min(strlen($clean_account), strlen($card_prefix)))) === 0) {
+                                            $is_matched = true;
+                                            break 2;
+                                        }
+                                    }
+                                    $is_matched = true;
+                                    break 2;
+                                }
+                            }
+                        }
+
+                        // Check 3: Clean unmasked digits match
+                        $clean_digits = preg_replace('/[^0-9]/', '', $text);
+                        if ($user_acc_len >= 8 && strpos($clean_digits, $clean_account) !== false) {
+                            $is_matched = true;
+                            break;
+                        }
+                    }
+
+                } else {
+                    // ── MOBILE BANKING MATCHING ──
+                    // Supports 11-digit & 12-digit unmasked and strictly 11-12 digit masked mobile numbers
+                    foreach ($search_texts as $text) {
+                        $text = trim($text);
+                        if ($text === '') continue;
+
+                        // A. Regex check for BD mobile sequence (11 or 12 digits) in text
+                        if (preg_match_all('/(?:(?:\+?88)?)(01[3-9]\d{8})(\d)?\b/', $text, $matches, PREG_SET_ORDER)) {
+                            foreach ($matches as $m) {
+                                if ($m[1] === $user_mobile_11) {
+                                    $is_matched = true;
+                                    break 2;
+                                }
+                            }
+                        }
+
+                        // B. Clean digits unmasked comparison
+                        $clean_digits = preg_replace('/[^0-9]/', '', $text);
+                        if (strpos($clean_digits, '8801') === 0 && strlen($clean_digits) >= 13) {
+                            $clean_digits = substr($clean_digits, 2);
+                        }
+
+                        // Exact 11 or 12 digit match
+                        if ($clean_digits === $clean_mobile || $clean_digits === $user_mobile_11) {
+                            $is_matched = true;
+                            break;
+                        }
+
+                        // Rocket 12-digit unmasked where first 11 digits match user input
+                        if (strlen($clean_digits) === 12 && substr($clean_digits, 0, 11) === $user_mobile_11) {
+                            $is_matched = true;
+                            break;
+                        }
+
+                        if (strlen($clean_digits) >= 11 && strlen($clean_digits) <= 13 && strpos($clean_digits, $user_mobile_11) === 0) {
+                            $is_matched = true;
+                            break;
+                        }
+
+                        // C. Masked number comparison (strictly 11 or 12 chars like 017****2645 or 017*****6451)
+                        if (strpos($text, '*') !== false || stripos($text, 'x') !== false) {
+                            $clean_masked = preg_replace('/[^0-9*xX]/', '', $text);
+                            if (strpos($clean_masked, '8801') === 0) {
+                                $clean_masked = substr($clean_masked, 2);
+                            }
+
+                            // Strict phone pattern: requires 013-019 followed immediately by 3-5 stars, then 4-5 digits
+                            // Total length must be 11 or 12 chars. Rejects 16-digit cards like 01300000****4337!
+                            if (preg_match('/^01[3-9][*xX]{3,5}\d{4,5}$/', $clean_masked)) {
+                                $m_prefix = substr($clean_masked, 0, 3);
+                                if ($m_prefix === $user_prefix_3) {
+                                    $m_suffix_4 = substr($clean_masked, -4);
+                                    if ($m_suffix_4 === $user_suffix_4) {
+                                        $is_matched = true;
+                                        break;
+                                    }
+
+                                    $rocket_sub_3 = substr($clean_masked, -4, 3);
+                                    if ($rocket_sub_3 === $user_suffix_3) {
+                                        $is_matched = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -233,14 +297,15 @@
                 } elseif (preg_match('/\t([0-9]{8,15})\t/', $sms_full_text, $tab_match)) {
                     // e.g. Rocket tab format: MD MONIR ISLAM\tRocket merchant\t10.00 BDT\t017672626451\t6910317462\t...
                     $sms_trxid = $tab_match[1];
-                } elseif (preg_match('/(?:[0-9]{11,12})\s+([0-9]{8,15})\b/', $sms_full_text, $seq_match)) {
+                } elseif (preg_match('/(?:[0-9]{11,12}|[*0-9]{10,20})\s+([0-9]{8,15})\b/', $sms_full_text, $seq_match)) {
                     $sms_trxid = $seq_match[1];
                 } else {
                     $sms_trxid = 'BQR' . time();
                 }
             }
 
-            $sms_sender = !empty($matched_sms['mobile_number']) ? $matched_sms['mobile_number'] : (!empty($matched_sms['sender']) ? $matched_sms['sender'] : $customer_mobile);
+            $payer_identity = ($payment_type === 'card') ? $clean_account : $customer_mobile;
+            $sms_sender = !empty($matched_sms['mobile_number']) ? $matched_sms['mobile_number'] : (!empty($matched_sms['sender']) ? $matched_sms['sender'] : $payer_identity);
 
             if (pp_set_transaction_byid($payment_id, $plugin_slug, $plugin_info['plugin_name'] ?? 'Bangla QR', $sms_sender, $sms_trxid, 'completed', $sms_id)) {
                 echo json_encode([
@@ -420,6 +485,53 @@
             margin-bottom: 1.5rem; line-height: 1.5;
         }
 
+        /* ── Payment Type Tabs (Segmented Switcher) ── */
+        .payment-type-tabs {
+            display: flex;
+            background: #f1f5f9;
+            border-radius: 14px;
+            padding: 4px;
+            margin-bottom: 1.25rem;
+            gap: 4px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .type-tab-btn {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 10px 14px;
+            font-size: 0.92rem;
+            font-weight: 700;
+            color: #64748b;
+            border: none;
+            background: transparent;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .type-tab-btn:hover {
+            color: #1e293b;
+            background: rgba(255, 255, 255, 0.6);
+        }
+
+        .type-tab-btn.active {
+            background: #ffffff;
+            color: #0f172a;
+            box-shadow: 0 3px 8px rgba(15, 23, 42, 0.08);
+        }
+
+        .type-tab-btn i {
+            font-size: 1.1rem;
+        }
+
+        .type-tab-btn.active i {
+            color: var(--primary-color);
+        }
+
         .mobile-field-wrapper {
             position: relative; margin-bottom: 1rem; width: 100%;
         }
@@ -436,6 +548,14 @@
             width: 22px; height: 15px; object-fit: cover; border-radius: 2px;
         }
 
+        .mobile-field-wrapper .card-prefix {
+            position: absolute; left: 0.9rem; top: 50%; transform: translateY(-50%);
+            font-size: 1.25rem; color: #64748b;
+            display: flex; align-items: center;
+            pointer-events: none;
+            z-index: 2;
+        }
+
         .mobile-input-field {
             width: 100%;
             padding: 0.95rem 0.85rem 0.95rem 4.6rem;
@@ -448,15 +568,30 @@
             outline: none;
         }
 
-        .mobile-input-field:focus {
+        .card-input-field {
+            width: 100%;
+            padding: 0.95rem 0.85rem 0.95rem 2.9rem;
+            font-size: 1.05rem; font-weight: 600; letter-spacing: 0.5px;
+            border: 2px solid var(--card-border);
+            border-radius: 14px;
+            background: #f8fafc;
+            color: var(--text-dark);
+            transition: all 0.25s;
+            outline: none;
+        }
+
+        .mobile-input-field:focus,
+        .card-input-field:focus {
             border-color: var(--primary-color);
             background: #ffffff;
             box-shadow: 0 0 0 4px rgba(95, 56, 249, 0.1);
         }
 
-        .mobile-input-field::placeholder { color: #94a3b8; font-weight: 400; letter-spacing: 0; }
+        .mobile-input-field::placeholder,
+        .card-input-field::placeholder { color: #94a3b8; font-weight: 400; letter-spacing: 0; }
 
-        .mobile-input-field.is-invalid {
+        .mobile-input-field.is-invalid,
+        .card-input-field.is-invalid {
             border-color: #ef4444;
             box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.1);
         }
@@ -960,27 +1095,66 @@
             </div>
 
             <!-- ═══════════════════════════════════════════════════ -->
-            <!-- STEP 1: Mobile Number Input Screen                -->
+            <!-- STEP 1: Identification Screen (Tab Switcher)       -->
             <!-- ═══════════════════════════════════════════════════ -->
             <div class="mobile-input-screen" id="mobileInputScreen">
-                <div class="mobile-icon-circle">
-                    <i class="bi bi-phone"></i>
-                </div>
-                <div class="mobile-input-title">Enter Your Payment Number</div>
-                <div class="mobile-input-desc">
-                    Enter the mobile number you will use to make the payment.<br>
-                    <strong style="color: #334155;">You must pay from this number only.</strong>
+                
+                <!-- Payment Method Tab Bar -->
+                <div class="payment-type-tabs">
+                    <button type="button" class="type-tab-btn active" id="tabMobile">
+                        <i class="bi bi-phone"></i>
+                        <span>Mobile Banking</span>
+                    </button>
+                    <button type="button" class="type-tab-btn" id="tabCard">
+                        <i class="bi bi-credit-card-2-front"></i>
+                        <span>Card / Bank</span>
+                    </button>
                 </div>
 
-                <div class="mobile-field-wrapper">
-                    <div class="country-prefix">
-                        <img src="https://flagcdn.com/w40/bd.png" alt="BD">
-                        +88
+                <!-- SECTION 1: Mobile Banking (Default) -->
+                <div id="sectionMobileBanking">
+                    <div class="mobile-icon-circle">
+                        <i class="bi bi-phone"></i>
                     </div>
-                    <input type="tel" class="mobile-input-field" id="customerMobile" placeholder="01XXXXXXXXX" maxlength="12" value="<?php echo htmlspecialchars($prefill_clean); ?>" autocomplete="tel" inputmode="numeric">
-                    <div class="mobile-error" id="mobileError">
-                        <i class="bi bi-exclamation-circle me-1"></i>
-                        <span id="mobileErrorText">Please enter a valid 11 or 12 digit mobile number</span>
+                    <div class="mobile-input-title">Enter Your Mobile Number</div>
+                    <div class="mobile-input-desc">
+                        Enter the mobile number you will use to make the payment.<br>
+                        <strong style="color: #334155;">You must pay from this number only.</strong>
+                    </div>
+
+                    <div class="mobile-field-wrapper">
+                        <div class="country-prefix">
+                            <img src="https://flagcdn.com/w40/bd.png" alt="BD">
+                            +88
+                        </div>
+                        <input type="tel" class="mobile-input-field" id="customerMobile" placeholder="01XXXXXXXXX" maxlength="12" value="<?php echo htmlspecialchars($prefill_clean); ?>" autocomplete="tel" inputmode="numeric">
+                        <div class="mobile-error" id="mobileError">
+                            <i class="bi bi-exclamation-circle me-1"></i>
+                            <span id="mobileErrorText">Please enter a valid 11 or 12 digit mobile number</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SECTION 2: Card / Bank Account (Without Phone Validation) -->
+                <div id="sectionCardBank" style="display: none;">
+                    <div class="mobile-icon-circle" style="background: rgba(14, 165, 233, 0.1); color: #0284c7;">
+                        <i class="bi bi-credit-card-2-front"></i>
+                    </div>
+                    <div class="mobile-input-title">Enter Card or Account Number</div>
+                    <div class="mobile-input-desc">
+                        Enter the card or bank account number used for payment.<br>
+                        <strong style="color: #334155;">e.g. 10771****9394, last 4 digits, or card number.</strong>
+                    </div>
+
+                    <div class="mobile-field-wrapper">
+                        <div class="card-prefix">
+                            <i class="bi bi-credit-card"></i>
+                        </div>
+                        <input type="text" class="card-input-field" id="customerAccount" placeholder="e.g. 10771****9394 or 9394" maxlength="24" autocomplete="off" inputmode="numeric">
+                        <div class="mobile-error" id="accountError">
+                            <i class="bi bi-exclamation-circle me-1"></i>
+                            <span id="accountErrorText">Please enter at least 4 digits of your card or account number</span>
+                        </div>
                     </div>
                 </div>
 
@@ -991,22 +1165,22 @@
 
                 <div class="mobile-security-note">
                     <i class="bi bi-lock-fill text-success"></i>
-                    Your number is only used for payment verification
+                    Your details are only used for payment verification
                 </div>
             </div>
 
             <!-- ═══════════════════════════════════════════════════ -->
-            <!-- STEP 2: QR Payment Screen (shown after mobile)    -->
+            <!-- STEP 2: QR Payment Screen (shown after details)   -->
             <!-- ═══════════════════════════════════════════════════ -->
             <div class="qr-payment-screen" id="qrPaymentScreen">
 
                 <!-- Paying From Banner -->
                 <div class="paying-from-banner" id="payingFromBanner">
-                    <div class="paying-from-icon">
+                    <div class="paying-from-icon" id="payingFromIcon">
                         <i class="bi bi-phone-vibrate"></i>
                     </div>
                     <div class="paying-from-text">
-                        <strong>Pay from this number only</strong>
+                        <strong id="payingFromTitle">Pay from this number only</strong>
                         <span class="paying-from-number" id="payingFromNumber"></span>
                     </div>
                 </div>
@@ -1154,32 +1328,85 @@
             }
         }
 
-        // ── Mobile Number Validation & Step Transition ──
+        // ── Tab Bar Switching: Mobile Banking vs Card / Bank ──
+        var currentPaymentType = 'mobile';
+        var tabMobile = document.getElementById('tabMobile');
+        var tabCard = document.getElementById('tabCard');
+        var sectionMobileBanking = document.getElementById('sectionMobileBanking');
+        var sectionCardBank = document.getElementById('sectionCardBank');
+
         var mobileInput = document.getElementById('customerMobile');
+        var cardInput = document.getElementById('customerAccount');
         var btnContinue = document.getElementById('btnContinue');
         var mobileError = document.getElementById('mobileError');
-        var mobileErrorText = document.getElementById('mobileErrorText');
+        var accountError = document.getElementById('accountError');
+
         var customerMobileNumber = '';
+        var customerAccountNumber = '';
+
+        function switchPaymentType(type) {
+            currentPaymentType = type;
+            if (type === 'card') {
+                tabCard.classList.add('active');
+                tabMobile.classList.remove('active');
+                sectionMobileBanking.style.display = 'none';
+                sectionCardBank.style.display = 'block';
+                if (mobileError) mobileError.style.display = 'none';
+                cardInput.focus();
+                validateCardInput();
+            } else {
+                tabMobile.classList.add('active');
+                tabCard.classList.remove('active');
+                sectionCardBank.style.display = 'none';
+                sectionMobileBanking.style.display = 'block';
+                if (accountError) accountError.style.display = 'none';
+                mobileInput.focus();
+                validateMobileInput();
+            }
+        }
+
+        tabMobile.addEventListener('click', function() { switchPaymentType('mobile'); });
+        tabCard.addEventListener('click', function() { switchPaymentType('card'); });
+
+        function validateMobileInput() {
+            var val = mobileInput.value.replace(/[^0-9]/g, '');
+            if ((val.length === 11 || val.length === 12) && val.startsWith('01')) {
+                btnContinue.disabled = false;
+                mobileInput.classList.remove('is-invalid');
+                if (mobileError) mobileError.style.display = 'none';
+                return true;
+            } else {
+                btnContinue.disabled = true;
+                return false;
+            }
+        }
+
+        function validateCardInput() {
+            var cleanDigits = cardInput.value.replace(/[^0-9]/g, '');
+            if (cleanDigits.length >= 4) {
+                btnContinue.disabled = false;
+                cardInput.classList.remove('is-invalid');
+                if (accountError) accountError.style.display = 'none';
+                return true;
+            } else {
+                btnContinue.disabled = true;
+                return false;
+            }
+        }
 
         mobileInput.addEventListener('input', function() {
             var val = this.value.replace(/[^0-9]/g, '');
             this.value = val;
+            validateMobileInput();
+        });
 
-            if ((val.length === 11 || val.length === 12) && val.startsWith('01')) {
-                btnContinue.disabled = false;
-                this.classList.remove('is-invalid');
-                mobileError.style.display = 'none';
-            } else {
-                btnContinue.disabled = true;
-            }
+        cardInput.addEventListener('input', function() {
+            validateCardInput();
         });
 
         // Enable continue button if pre-filled with valid number
         if (mobileInput.value) {
-            var initVal = mobileInput.value.replace(/[^0-9]/g, '');
-            if ((initVal.length === 11 || initVal.length === 12) && initVal.startsWith('01')) {
-                btnContinue.disabled = false;
-            }
+            validateMobileInput();
         }
 
         mobileInput.addEventListener('keypress', function(e) {
@@ -1188,20 +1415,46 @@
             }
         });
 
-        btnContinue.addEventListener('click', function() {
-            var val = mobileInput.value.replace(/[^0-9]/g, '');
-
-            if ((val.length !== 11 && val.length !== 12) || !val.startsWith('01')) {
-                mobileInput.classList.add('is-invalid');
-                mobileErrorText.textContent = 'Please enter a valid 11 or 12 digit mobile number starting with 01';
-                mobileError.style.display = 'block';
-                return;
+        cardInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && !btnContinue.disabled) {
+                btnContinue.click();
             }
+        });
 
-            customerMobileNumber = val;
+        btnContinue.addEventListener('click', function() {
+            if (currentPaymentType === 'mobile') {
+                var val = mobileInput.value.replace(/[^0-9]/g, '');
+                if ((val.length !== 11 && val.length !== 12) || !val.startsWith('01')) {
+                    mobileInput.classList.add('is-invalid');
+                    document.getElementById('mobileErrorText').textContent = 'Please enter a valid 11 or 12 digit mobile number starting with 01';
+                    if (mobileError) mobileError.style.display = 'block';
+                    return;
+                }
 
-            // Show paying-from number
-            document.getElementById('payingFromNumber').textContent = val;
+                customerMobileNumber = val;
+
+                // Show paying-from number
+                document.getElementById('payingFromIcon').innerHTML = '<i class="bi bi-phone-vibrate"></i>';
+                document.getElementById('payingFromTitle').textContent = 'Pay from this number only';
+                document.getElementById('payingFromNumber').textContent = val;
+
+            } else {
+                var rawCard = cardInput.value.trim();
+                var cleanCard = rawCard.replace(/[^0-9]/g, '');
+                if (cleanCard.length < 4) {
+                    cardInput.classList.add('is-invalid');
+                    document.getElementById('accountErrorText').textContent = 'Please enter at least 4 digits of your card or account number';
+                    if (accountError) accountError.style.display = 'block';
+                    return;
+                }
+
+                customerAccountNumber = rawCard;
+
+                // Show paying-from card/account
+                document.getElementById('payingFromIcon').innerHTML = '<i class="bi bi-credit-card-2-front"></i>';
+                document.getElementById('payingFromTitle').textContent = 'Pay from this card / account only';
+                document.getElementById('payingFromNumber').textContent = rawCard;
+            }
 
             // Animate transition: hide mobile screen → show QR screen
             var inputScreen = document.getElementById('mobileInputScreen');
@@ -1213,7 +1466,7 @@
                 qrScreen.style.display = 'block';
                 qrScreen.classList.add('slide-in');
 
-                // Start polling ONLY after mobile number is entered
+                // Start polling ONLY after details are entered
                 startPaymentPolling();
             }, 350);
         });
@@ -1246,7 +1499,14 @@
                     var formData = new FormData();
                     formData.append("bangla-qr", paymentId);
                     formData.append("payment_id", paymentId);
-                    formData.append("customer_mobile", customerMobileNumber);
+                    formData.append("payment_type", currentPaymentType);
+
+                    if (currentPaymentType === 'card') {
+                        formData.append("customer_account", customerAccountNumber);
+                        formData.append("customer_mobile", customerAccountNumber);
+                    } else {
+                        formData.append("customer_mobile", customerMobileNumber);
+                    }
 
                     var res = await fetch(paymentUrl + "?method=bangla-qr", {
                         method: "POST",
