@@ -133,7 +133,7 @@
                     <div class="input-group">
                         <input type="text" class="form-control" name="sender_key" id="sender_key" value="<?= htmlspecialchars($settings['sender_key'] ?? 'Rocket') ?>" placeholder="e.g. Rocket, bKash, Nagad">
                     </div>
-                    <div class="text-secondary mt-2 small">Provider on your SMS receiver log (e.g. <b>Rocket</b>)</div>
+                    <div class="text-secondary mt-2 small">Provider on your SMS receiver log (e.g. <b>Rocket, Bangla QR</b>). Only SMS matching this payment method will be verified, preventing cross-gateway conflicts (e.g. bKash).</div>
                   </div>
 
                   <div class="col-sm-6">
@@ -146,6 +146,32 @@
                 </div>
 
                 <div class="row mb-4">
+                  <div class="col-12">
+                    <label for="qr_mode" class="col-sm-12 col-form-label form-label">QR Code Mode</label>
+                    <div class="input-group">
+                      <?php $qr_mode = $settings['qr_mode'] ?? 'dynamic'; ?>
+                      <select class="form-control" name="qr_mode" id="qr_mode">
+                        <option value="dynamic" <?= ($qr_mode === 'dynamic') ? 'selected' : '' ?>>Dynamic QR (Auto-embedded Amount)</option>
+                        <option value="static" <?= ($qr_mode === 'static') ? 'selected' : '' ?>>Static Image (Uploaded File)</option>
+                      </select>
+                    </div>
+                    <div class="text-secondary mt-2 small">Dynamic mode generates a fresh QR for each payment with the exact amount locked per Bangla QR guidelines.</div>
+                  </div>
+                </div>
+
+                <div class="row mb-4">
+                  <div class="col-12">
+                    <label for="bangla_qr_payload" class="col-form-label form-label mb-1">Base Bangla QR Payload (EMVCo String)</label>
+                    <div class="input-group">
+                        <textarea class="form-control font-monospace" style="font-size: 0.82rem;" name="bangla_qr_payload" id="bangla_qr_payload" rows="3" placeholder="0002010102112632..."><?= htmlspecialchars($settings['bangla_qr_payload'] ?? '') ?></textarea>
+                    </div>
+                    <div class="text-secondary mt-2 small">
+                      Base EMVCo payload string (starts with <code>000201...</code>). Automatically extracted when you upload your QR image below, or you can paste/edit it manually. The system dynamically locks the transaction amount and recomputes the CRC-16 checksum for each customer payment.
+                    </div>
+                  </div>
+                </div>
+
+                <div class="row mb-4">
                   <div class="col-sm-7">
                     <label class="col-sm-12 col-form-label form-label">Upload Bangla QR Image</label>
                     <div class="mb-2">
@@ -153,7 +179,7 @@
                     </div>
                     <div id="upload_alert"></div>
                     <div class="text-secondary small">
-                      Select your QR image file (PNG, JPG, WebP) to upload directly and replace the default QR code.
+                      Select your QR image file (PNG, JPG, WebP) to upload. The Base Bangla QR Payload string will be automatically extracted from it.
                     </div>
                   </div>
 
@@ -180,16 +206,56 @@
     </div>
 </form>
 
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 <script>
     const pluginUploadUrl = '<?php echo $plugin_base_url . "/upload.php"; ?>';
 
-    // Direct Instant Upload to upload.php as soon as file is chosen
+    // Decode QR client-side from file via canvas + jsQR
+    function decodeQrClientSide(file, callback) {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            const img = new Image();
+            img.onload = function() {
+                try {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.naturalWidth || img.width;
+                    canvas.height = img.naturalHeight || img.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+                    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    if (window.jsQR) {
+                        const code = jsQR(imgData.data, canvas.width, canvas.height, {
+                            inversionAttempts: "dontInvert"
+                        });
+                        if (code && code.data) {
+                            return callback(code.data.trim());
+                        }
+                    }
+                } catch(e) {
+                    console.log('jsQR client decode error:', e);
+                }
+                callback(null);
+            };
+            img.src = evt.target.result;
+        };
+        reader.readAsDataURL(file);
+    }
+
+    // Direct Instant Upload to upload.php as soon as file is chosen & auto-fetch payload
     $(document).off('change', '#qr_file_input').on('change', '#qr_file_input', function(e) {
         const file = e.target.files[0];
         if (!file) return;
 
         const alertBox = document.getElementById('upload_alert');
-        if (alertBox) alertBox.innerHTML = '<div class="alert alert-info py-2 mb-2"><span class="spinner-border spinner-border-sm me-2"></span>Uploading QR to server assets...</div>';
+        if (alertBox) alertBox.innerHTML = '<div class="alert alert-info py-2 mb-2"><span class="spinner-border spinner-border-sm me-2"></span>Uploading and decoding QR payload...</div>';
+
+        // Attempt client-side instant decode
+        decodeQrClientSide(file, function(clientPayload) {
+            if (clientPayload) {
+                $('#bangla_qr_payload').val(clientPayload);
+            }
+        });
 
         const formData = new FormData();
         formData.append('qr_file', file);
@@ -203,7 +269,16 @@
             dataType: 'json',
             success: function(res) {
                 if (res && res.status) {
-                    if (alertBox) alertBox.innerHTML = '<div class="alert alert-success py-2 mb-2"><i class="bi bi-check-circle me-1"></i>' + res.message + '</div>';
+                    if (res.payload) {
+                        $('#bangla_qr_payload').val(res.payload);
+                    }
+                    const currentVal = ($('#bangla_qr_payload').val() || '').trim();
+                    let payloadNotice = '';
+                    if (currentVal.length > 0) {
+                        payloadNotice = '<div class="mt-1 small text-success fw-bold"><i class="bi bi-qr-code me-1"></i> Base Bangla QR Payload fetched successfully from QR code!</div>';
+                    }
+                    if (alertBox) alertBox.innerHTML = '<div class="alert alert-success py-2 mb-2"><i class="bi bi-check-circle me-1"></i>' + res.message + payloadNotice + '</div>';
+
                     // Update preview with fresh timestamp cache-buster
                     const reader = new FileReader();
                     reader.onload = function(evt) {

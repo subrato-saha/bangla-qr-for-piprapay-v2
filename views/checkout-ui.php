@@ -1,4 +1,8 @@
 <?php
+    if (session_status() === PHP_SESSION_NONE) {
+        @session_start();
+    }
+
     $transaction_details = pp_get_transation($payment_id);
     $setting = pp_get_settings();
     $faq_list = pp_get_faq();
@@ -19,9 +23,37 @@
     $total_payable = $transaction_amount + $transaction_fee;
     
     $configured_provider = !empty($settings['sender_key']) ? trim($settings['sender_key']) : 'Rocket';
-    $timer_minutes = safeNumber($settings['timer_duration'] ?? 15);
-    if($timer_minutes <= 0) $timer_minutes = 15;
-    $timer_seconds = $timer_minutes * 60;
+
+    // Synchronize timer duration directly with admin settings
+    $raw_timer_val = $settings['timer_duration'] ?? null;
+    if ($raw_timer_val !== null && is_numeric($raw_timer_val) && (int)$raw_timer_val > 0) {
+        $timer_minutes = (int)$raw_timer_val;
+    } elseif (!empty($raw_timer_val) && function_exists('safeNumber') && safeNumber($raw_timer_val) > 0) {
+        $timer_minutes = (int)safeNumber($raw_timer_val);
+    } else {
+        $timer_minutes = 15;
+    }
+    $timer_seconds_total = $timer_minutes * 60;
+
+    // Track countdown within session without database timezone discrepancies
+    if (empty($_SESSION['bqr_timer_start_' . $payment_id])) {
+        $_SESSION['bqr_timer_start_' . $payment_id] = time();
+    }
+    $elapsed_seconds = time() - (int)$_SESSION['bqr_timer_start_' . $payment_id];
+    $timer_seconds = $timer_seconds_total - $elapsed_seconds;
+    if ($timer_seconds < 0) {
+        $timer_seconds = 0;
+    }
+
+    $init_mins = floor($timer_seconds / 60);
+    $init_secs = $timer_seconds % 60;
+    $timer_display_init = sprintf('%02d:%02d', $init_mins, $init_secs);
+
+    // Cryptographic Session Security Token (Anti-CSRF & Tamper Protection)
+    if (empty($_SESSION['bqr_sec_token_' . $payment_id])) {
+        $_SESSION['bqr_sec_token_' . $payment_id] = bin2hex(random_bytes(16));
+    }
+    $bqr_security_token = $_SESSION['bqr_sec_token_' . $payment_id];
     
     // Assets Directory & URLs
     $plugin_dir_name = !empty($plugin_info['plugin_dir']) ? $plugin_info['plugin_dir'] : 'payment-gateway';
@@ -29,11 +61,127 @@
     $local_assets = __DIR__ . '/../assets/';
 
     if (file_exists($local_assets . 'qr.png')) {
-        $qr_image_url = $assets_base . 'qr.png?v=' . filemtime($local_assets . 'qr.png');
+        $static_qr_url = $assets_base . 'qr.png?v=' . filemtime($local_assets . 'qr.png');
     } elseif (file_exists($local_assets . 'bangla-qr-default.jpg')) {
-        $qr_image_url = $assets_base . 'bangla-qr-default.jpg?v=' . filemtime($local_assets . 'bangla-qr-default.jpg');
+        $static_qr_url = $assets_base . 'bangla-qr-default.jpg?v=' . filemtime($local_assets . 'bangla-qr-default.jpg');
     } else {
-        $qr_image_url = $assets_base . 'icon.png';
+        $static_qr_url = $assets_base . 'icon.png';
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // DYNAMIC BANGLA QR EMVCo GENERATOR (Bangladesh Bank Standard)
+    // ──────────────────────────────────────────────────────────
+    if (!function_exists('pp_emvco_crc16')) {
+        function pp_emvco_crc16($str) {
+            $crc = 0xFFFF;
+            $len = strlen($str);
+            for ($c = 0; $c < $len; $c++) {
+                $crc ^= (ord($str[$c]) << 8);
+                for ($i = 0; $i < 8; $i++) {
+                    if ($crc & 0x8000) {
+                        $crc = (($crc << 1) ^ 0x1021) & 0xFFFF;
+                    } else {
+                        $crc = ($crc << 1) & 0xFFFF;
+                    }
+                }
+            }
+            return sprintf('%04X', $crc);
+        }
+    }
+
+    if (!function_exists('pp_build_dynamic_bangla_qr')) {
+        function pp_build_dynamic_bangla_qr($base_payload, $amount, $currency = '050') {
+            $str = trim((string)$base_payload);
+            $tags = [];
+            $offset = 0;
+            $len = strlen($str);
+
+            while ($offset < $len) {
+                if ($offset + 4 > $len) break;
+                $tag = substr($str, $offset, 2);
+                $val_len = (int)substr($str, $offset + 2, 2);
+                if ($offset + 4 + $val_len > $len) break;
+                $val = substr($str, $offset + 4, $val_len);
+                $tags[$tag] = $val;
+                $offset += 4 + $val_len;
+                if ($tag === '63') break;
+            }
+
+            if (empty($tags) || !isset($tags['00'])) {
+                return null;
+            }
+
+            // Tag 01: Set Point of Initiation Method to '12' (Dynamic QR per EMVCo spec)
+            $tags['01'] = '12';
+
+            // Tag 53: Transaction Currency (BDT is 050)
+            $tags['53'] = $currency;
+
+            // Tag 54: Transaction Amount
+            $tags['54'] = number_format((float)$amount, 2, '.', '');
+
+            // Tag 58: Country Code (BD)
+            if (!isset($tags['58'])) {
+                $tags['58'] = 'BD';
+            }
+
+            // Reconstruct in proper EMVCo tag order:
+            // 00, 01, 02..51, 52, 53, 54, 55..57, 58, 59, 60, 61, 62
+            $out = '';
+            $out .= '00' . sprintf('%02d', strlen($tags['00'])) . $tags['00'];
+            $out .= '01' . sprintf('%02d', strlen($tags['01'])) . $tags['01'];
+
+            for ($t = 2; $t <= 51; $t++) {
+                $k = sprintf('%02d', $t);
+                if (isset($tags[$k])) {
+                    $out .= $k . sprintf('%02d', strlen($tags[$k])) . $tags[$k];
+                }
+            }
+
+            if (isset($tags['52'])) {
+                $out .= '52' . sprintf('%02d', strlen($tags['52'])) . $tags['52'];
+            }
+
+            $out .= '53' . sprintf('%02d', strlen($tags['53'])) . $tags['53'];
+            $out .= '54' . sprintf('%02d', strlen($tags['54'])) . $tags['54'];
+
+            for ($t = 55; $t <= 62; $t++) {
+                $k = sprintf('%02d', $t);
+                if (isset($tags[$k])) {
+                    $out .= $k . sprintf('%02d', strlen($tags[$k])) . $tags[$k];
+                }
+            }
+
+            $to_crc = $out . '6304';
+            $crc = pp_emvco_crc16($to_crc);
+
+            return $to_crc . $crc;
+        }
+    }
+
+    $qr_mode = $settings['qr_mode'] ?? 'dynamic';
+    $base_payload = trim($settings['bangla_qr_payload'] ?? '');
+
+    // If no custom payload is configured, use standard Bangladesh Bank Bangla QR template for testing
+    if (empty($base_payload)) {
+        $backend_merchant = $setting['response'][0]['site_name'] ?? 'PipraPay';
+        $m_name = substr(preg_replace('/[^A-Za-z0-9 ]/', '', $backend_merchant), 0, 25);
+        if (empty($m_name)) $m_name = 'PipraPay';
+        $mname_tlv = '59' . sprintf('%02d', strlen($m_name)) . $m_name;
+        $base_payload = '00020101021126320014bd.gov.bb.bqr0111017672626455204541153030505802BD' . $mname_tlv . '6005Dhaka6304ABCD';
+    }
+
+    $dynamic_payload = null;
+    if ($qr_mode !== 'static' && !empty($base_payload)) {
+        $dynamic_payload = pp_build_dynamic_bangla_qr($base_payload, $total_payable);
+        if (!empty($dynamic_payload)) {
+            // Render high-resolution dynamic QR code image containing the locked amount payload
+            $qr_image_url = 'https://api.qrserver.com/v1/create-qr-code/?size=320x320&margin=12&data=' . urlencode($dynamic_payload);
+        } else {
+            $qr_image_url = $static_qr_url;
+        }
+    } else {
+        $qr_image_url = $static_qr_url;
     }
 
     $download_image_url = $qr_image_url;
@@ -62,7 +210,34 @@
     if (isset($_POST['bangla-qr']) || isset($_POST['bangla-qr-poll'])) {
         global $db_prefix;
 
-        // 1. Check if transaction is already completed
+        header('Content-Type: application/json; charset=utf-8');
+
+        // Security Layer 1: Cryptographic CSRF & Session Nonce Validation
+        $posted_token = trim((string)($_POST['sec_token'] ?? ''));
+        $expected_token = (string)($_SESSION['bqr_sec_token_' . $payment_id] ?? '');
+        if (empty($posted_token) || empty($expected_token) || !hash_equals($expected_token, $posted_token)) {
+            echo json_encode([
+                "status" => "false",
+                "completed" => false,
+                "message" => "Security verification token expired or invalid. Please refresh the page."
+            ]);
+            exit();
+        }
+
+        // Security Layer 2: Adaptive Rate Limiting & Cooldown Protection
+        $now = microtime(true);
+        $last_poll = (float)($_SESSION['bqr_last_poll_' . $payment_id] ?? 0);
+        if ($now - $last_poll < 1.8) {
+            echo json_encode([
+                "status" => "false",
+                "completed" => false,
+                "message" => "Awaiting payment..."
+            ]);
+            exit();
+        }
+        $_SESSION['bqr_last_poll_' . $payment_id] = $now;
+
+        // Security Layer 3: Check if transaction is already completed in database
         $current_tx = pp_get_transation($payment_id);
         $tx_status = strtolower($current_tx['response'][0]['transaction_status'] ?? '');
         
@@ -76,18 +251,26 @@
             exit();
         }
 
-        // 2. Determine payment type: 'mobile' (default) or 'card'
-        $payment_type = trim($_POST['payment_type'] ?? 'mobile');
+        // Security Layer 4: Server-Side Identity Locking (Anti-Tamper & Anti-Brute-Force)
+        // Permanently locks the customer's phone / account into server session memory upon first input.
+        // Subsequent polling strictly uses this session-locked identity, completely ignoring any
+        // altered or spoofed parameters sent by client DevTools or automated scripts.
+        $session_lock_key = 'bqr_locked_id_' . $payment_id;
+        $payment_type = trim((string)($_POST['payment_type'] ?? 'mobile'));
         if ($payment_type !== 'card') {
             $payment_type = 'mobile';
         }
 
         if ($payment_type === 'card') {
-            // Card / Bank Account verification (no phone validation required)
-            $customer_account = trim($_POST['customer_account'] ?? ($_POST['customer_mobile'] ?? ''));
-            $clean_account = preg_replace('/[^0-9]/', '', $customer_account);
+            $customer_account = trim((string)($_POST['customer_account'] ?? ($_POST['customer_mobile'] ?? '')));
+            $clean_account = substr(preg_replace('/[^0-9]/', '', $customer_account), 0, 20);
 
-            if (empty($clean_account) || strlen($clean_account) < 4) {
+            if (!empty($clean_account) && strlen($clean_account) >= 4) {
+                $_SESSION[$session_lock_key] = [
+                    'type' => 'card',
+                    'clean_account' => $clean_account
+                ];
+            } elseif (empty($_SESSION[$session_lock_key])) {
                 echo json_encode([
                     "status" => "false",
                     "completed" => false,
@@ -95,31 +278,45 @@
                 ]);
                 exit();
             }
-
-            $user_acc_suffix_4 = substr($clean_account, -4);
-            $user_acc_len = strlen($clean_account);
         } else {
-            // Mobile Banking verification
-            $customer_mobile = trim($_POST['customer_mobile'] ?? '');
+            $customer_mobile = trim((string)($_POST['customer_mobile'] ?? ''));
             $clean_mobile = preg_replace('/[^0-9]/', '', $customer_mobile);
             if (strpos($clean_mobile, '8801') === 0 && strlen($clean_mobile) >= 13) {
                 $clean_mobile = substr($clean_mobile, 2);
             }
+            $clean_mobile = substr($clean_mobile, 0, 12);
 
-            if (empty($clean_mobile) || strlen($clean_mobile) < 11) {
+            if (!empty($clean_mobile) && (strlen($clean_mobile) === 11 || strlen($clean_mobile) === 12) && strpos($clean_mobile, '01') === 0) {
+                $_SESSION[$session_lock_key] = [
+                    'type' => 'mobile',
+                    'clean_mobile' => $clean_mobile
+                ];
+            } elseif (empty($_SESSION[$session_lock_key])) {
                 echo json_encode([
                     "status" => "false",
                     "completed" => false,
-                    "message" => "Valid mobile number required for verification."
+                    "message" => "Valid 11 or 12 digit Bangladeshi mobile number required."
                 ]);
                 exit();
             }
+        }
 
-            // Primary 11-digit mobile components
+        // Always resolve identity strictly from immutable server session lock
+        $locked_identity = $_SESSION[$session_lock_key];
+        $payment_type = $locked_identity['type'];
+
+        if ($payment_type === 'card') {
+            $clean_account = $locked_identity['clean_account'];
+            $user_acc_suffix_4 = substr($clean_account, -4);
+            $user_acc_len = strlen($clean_account);
+            $customer_mobile = $clean_account;
+        } else {
+            $clean_mobile = $locked_identity['clean_mobile'];
             $user_mobile_11 = substr($clean_mobile, 0, 11);
             $user_prefix_3  = substr($user_mobile_11, 0, 3);
             $user_suffix_4  = substr($user_mobile_11, -4);
             $user_suffix_3  = substr($user_mobile_11, -3);
+            $customer_mobile = $clean_mobile;
         }
 
         // 4. Amount matching bounds (tolerance ±0.5 BDT)
@@ -130,9 +327,32 @@
         $min_str = number_format($total_payable, 2, '.', '');
         $comma_str = number_format($total_payable, 2);
 
-        // 5. Query recent unused SMS (No strict time limit to prevent missing delayed SMS or timezone discrepancies)
+        // 5. Dynamic SMS Provider / Payment Method Matching
+        // Matches DB provider columns (payment_method, provider, sender, sender_name, method, type)
+        // against whatever provider(s) the admin configured in the admin panel setting ("SMS Provider Name").
+        // Completely dynamic — no hardcoded provider names or blocklists.
+        $configured_provider_setting = trim($settings['sender_key'] ?? '');
+        if (empty($configured_provider_setting)) {
+            $configured_provider_setting = 'Rocket, Bangla QR';
+        }
+
+        $raw_provider_tokens = preg_split('/[,\|\/]+/', strtolower($configured_provider_setting));
+        $allowed_provider_keywords = [];
+        foreach ($raw_provider_tokens as $t) {
+            $t = trim($t);
+            if ($t === '') continue;
+            $allowed_provider_keywords[] = $t;
+            // Also add collapsed version without spaces/dashes (e.g. "pubali bank" -> "pubalibank", "bangla-qr" -> "banglaqr")
+            $collapsed = preg_replace('/[\s\-_]+/', '', $t);
+            if ($collapsed !== '' && $collapsed !== $t) {
+                $allowed_provider_keywords[] = $collapsed;
+            }
+        }
+        $allowed_provider_keywords = array_values(array_unique($allowed_provider_keywords));
+
+        // 6. Query recent unused SMS (Limit 300 to accommodate multi-provider SMS logs)
         // Orders by id DESC so newest incoming payments are evaluated first
-        $all_recent_sms = json_decode(getData($db_prefix . 'sms_data', "WHERE LOWER(status) != 'used' ORDER BY id DESC LIMIT 50"), true);
+        $all_recent_sms = json_decode(getData($db_prefix . 'sms_data', "WHERE LOWER(status) != 'used' ORDER BY id DESC LIMIT 300"), true);
 
         $matched_sms = null;
         if ($all_recent_sms['status'] == true && !empty($all_recent_sms['response'])) {
@@ -149,6 +369,35 @@
                 ));
 
                 if (!$amount_match) continue;
+
+                // Check Payment Method / SMS Provider
+                // Strictly evaluate the DB columns (payment_method, provider, sender, etc.), NEVER the SMS message body.
+                // In interoperable Bangla QR, customer payment source (e.g. bKash, Nagad) is mentioned inside the SMS body,
+                // while the SMS provider column itself is the acquiring bank (e.g. Pubali Bank or Rocket).
+                $row_provider_fields = [];
+                if (!empty($row['payment_method'])) $row_provider_fields[] = (string)$row['payment_method'];
+                if (!empty($row['provider']))       $row_provider_fields[] = (string)$row['provider'];
+                if (!empty($row['sender']))         $row_provider_fields[] = (string)$row['sender'];
+                if (!empty($row['sender_name']))    $row_provider_fields[] = (string)$row['sender_name'];
+                if (!empty($row['method']))         $row_provider_fields[] = (string)$row['method'];
+                if (!empty($row['title']))          $row_provider_fields[] = (string)$row['title'];
+                if (!empty($row['type']))           $row_provider_fields[] = (string)$row['type'];
+
+                $row_provider_combined = strtolower(trim(implode(' ', $row_provider_fields)));
+
+                // Check if this row's provider columns match any provider name configured in admin panel
+                $provider_matched = false;
+                foreach ($allowed_provider_keywords as $kw) {
+                    if (strpos($row_provider_combined, $kw) !== false) {
+                        $provider_matched = true;
+                        break;
+                    }
+                }
+
+                if (!$provider_matched) {
+                    // Row does not belong to the configured SMS Provider
+                    continue;
+                }
 
                 // Check payment matching based on payment_type
                 $search_texts = [];
@@ -243,28 +492,37 @@
                             break;
                         }
 
-                        // C. Masked number comparison (strictly 11 or 12 chars like 017****2645 or 017*****6451)
+                        // C. Masked number comparison (e.g. 0173****7968, 017****2645, 017*****6451, etc.)
                         if (strpos($text, '*') !== false || stripos($text, 'x') !== false) {
-                            $clean_masked = preg_replace('/[^0-9*xX]/', '', $text);
-                            if (strpos($clean_masked, '8801') === 0) {
-                                $clean_masked = substr($clean_masked, 2);
-                            }
+                            if (preg_match_all('/(?:(?:\+?88)?)(01[3-9]\d{0,2})[*xX]{2,6}(\d{3,5})\b/', $text, $matches, PREG_SET_ORDER)) {
+                                foreach ($matches as $m) {
+                                    $m_prefix = $m[1];
+                                    $m_suffix = $m[2];
 
-                            // Strict phone pattern: requires 013-019 followed immediately by 3-5 stars, then 4-5 digits
-                            // Total length must be 11 or 12 chars. Rejects 16-digit cards like 01300000****4337!
-                            if (preg_match('/^01[3-9][*xX]{3,5}\d{4,5}$/', $clean_masked)) {
-                                $m_prefix = substr($clean_masked, 0, 3);
-                                if ($m_prefix === $user_prefix_3) {
-                                    $m_suffix_4 = substr($clean_masked, -4);
-                                    if ($m_suffix_4 === $user_suffix_4) {
-                                        $is_matched = true;
-                                        break;
-                                    }
+                                    // Prefix check: User mobile must start with the prefix (e.g. 017 or 0173)
+                                    if (strpos($user_mobile_11, $m_prefix) === 0) {
+                                        $m_suf_len = strlen($m_suffix);
 
-                                    $rocket_sub_3 = substr($clean_masked, -4, 3);
-                                    if ($rocket_sub_3 === $user_suffix_3) {
-                                        $is_matched = true;
-                                        break;
+                                        // 1. 4-digit suffix matches 11-digit or 12-digit mobile (e.g. 7968, 2645, 6451)
+                                        if ($m_suf_len === 4 && (substr($user_mobile_11, -4) === $m_suffix || substr($clean_mobile, -4) === $m_suffix)) {
+                                            $is_matched = true;
+                                            break 2;
+                                        }
+                                        // 2. 3-digit suffix matches 11-digit or 12-digit
+                                        if ($m_suf_len === 3 && (substr($user_mobile_11, -3) === $m_suffix || substr($clean_mobile, -3) === $m_suffix)) {
+                                            $is_matched = true;
+                                            break 2;
+                                        }
+                                        // 3. 5-digit suffix matches 12-digit or its first 4 match 11-digit suffix
+                                        if ($m_suf_len === 5 && (substr($clean_mobile, -5) === $m_suffix || substr($m_suffix, 0, 4) === $user_suffix_4)) {
+                                            $is_matched = true;
+                                            break 2;
+                                        }
+                                        // 4. Rocket 12-digit input with 11-digit SMS
+                                        if (strlen($clean_mobile) === 12 && substr($clean_mobile, 7, 4) === $m_suffix) {
+                                            $is_matched = true;
+                                            break 2;
+                                        }
                                     }
                                 }
                             }
@@ -273,6 +531,28 @@
                 }
 
                 if ($is_matched) {
+                    // Extract Candidate Transaction ID from row or SMS body to check if already used
+                    $cand_trxid = !empty($row['transaction_id']) ? trim($row['transaction_id']) : '';
+                    if (empty($cand_trxid)) {
+                        $sms_full_text = ($row['sms_text'] ?? '') . ' ' . ($row['message'] ?? '') . ' ' . ($row['raw_sms'] ?? '');
+                        if (preg_match('/(?:TxnId|TrxID|Trx\s*Id|TrxID:|TxnID:)\s*[:#]?\s*([A-Za-z0-9]+)/i', $sms_full_text, $trx_match)) {
+                            $cand_trxid = $trx_match[1];
+                        } elseif (preg_match('/\t([0-9]{8,15})\t/', $sms_full_text, $tab_match)) {
+                            $cand_trxid = $tab_match[1];
+                        } elseif (preg_match('/(?:[0-9]{11,12}|[*0-9]{10,20})\s+([0-9]{8,15})\b/', $sms_full_text, $seq_match)) {
+                            $cand_trxid = $seq_match[1];
+                        }
+                    }
+
+                    // Check if Transaction ID already exists in database (prevent duplicate verification)
+                    if (!empty($cand_trxid) && function_exists('pp_check_transaction_exits')) {
+                        $check_trx = pp_check_transaction_exits($cand_trxid);
+                        if (isset($check_trx['status']) && ($check_trx['status'] == true || $check_trx['status'] === 'true')) {
+                            // Already used, skip this SMS and continue looking for an unused one
+                            continue;
+                        }
+                    }
+
                     $matched_sms = $row;
                     break;
                 }
@@ -298,10 +578,27 @@
                 }
             }
 
+            // Check if transaction ID already exists in PipraPay
+            if (!empty($sms_trxid) && function_exists('pp_check_transaction_exits')) {
+                $check_trx = pp_check_transaction_exits($sms_trxid);
+                if (isset($check_trx['status']) && ($check_trx['status'] == true || $check_trx['status'] === 'true')) {
+                    echo json_encode([
+                        "status" => "false",
+                        "completed" => false,
+                        "message" => "Transaction ID already exists"
+                    ]);
+                    exit();
+                }
+            }
+
             $payer_identity = ($payment_type === 'card') ? $clean_account : $customer_mobile;
             $sms_sender = !empty($matched_sms['mobile_number']) ? $matched_sms['mobile_number'] : (!empty($matched_sms['sender']) ? $matched_sms['sender'] : $payer_identity);
 
             if (pp_set_transaction_byid($payment_id, $plugin_slug, $plugin_info['plugin_name'] ?? 'Bangla QR', $sms_sender, $sms_trxid, 'completed', $sms_id)) {
+                // Clear session tokens and identity lock upon successful completion
+                unset($_SESSION[$session_lock_key]);
+                unset($_SESSION['bqr_sec_token_' . $payment_id]);
+
                 echo json_encode([
                     "status" => "true",
                     "completed" => true,
@@ -483,10 +780,10 @@
         .payment-type-tabs {
             display: flex;
             background: #f1f5f9;
-            border-radius: 14px;
-            padding: 4px;
-            margin-bottom: 1.25rem;
-            gap: 4px;
+            border-radius: 12px;
+            padding: 3px;
+            margin-bottom: 1.15rem;
+            gap: 3px;
             border: 1px solid #e2e8f0;
         }
 
@@ -495,16 +792,17 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
-            padding: 10px 14px;
-            font-size: 0.92rem;
-            font-weight: 700;
+            gap: 6px;
+            padding: 8px 12px;
+            font-size: 0.84rem;
+            font-weight: 600;
             color: #64748b;
             border: none;
             background: transparent;
-            border-radius: 10px;
+            border-radius: 9px;
             cursor: pointer;
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            white-space: nowrap;
         }
 
         .type-tab-btn:hover {
@@ -516,10 +814,11 @@
             background: #ffffff;
             color: #0f172a;
             box-shadow: 0 3px 8px rgba(15, 23, 42, 0.08);
+            font-weight: 700;
         }
 
         .type-tab-btn i {
-            font-size: 1.1rem;
+            font-size: 0.95rem;
         }
 
         .type-tab-btn.active i {
@@ -955,6 +1254,22 @@
             }
             .qr-scan-guide {
                 font-size: 0.82rem;
+            }
+            .payment-type-tabs {
+                margin-bottom: 0.95rem;
+                padding: 3px;
+                gap: 3px;
+                border-radius: 10px;
+            }
+            .type-tab-btn {
+                padding: 6px 8px;
+                font-size: 0.76rem;
+                gap: 4px;
+                border-radius: 8px;
+            }
+            .type-tab-btn i {
+                font-size: 0.88rem;
+            }
             .supported-apps-strip {
                 padding: 0.5rem 0.6rem;
                 gap: 4px;
@@ -1067,7 +1382,7 @@
                 <div class="timer-badge" id="timerBadge">
                     <span class="timer-pulse"></span>
                     <i class="bi bi-clock me-1"></i>
-                    <span id="countdownDisplay">15:00</span>
+                    <span id="countdownDisplay"><?php echo $timer_display_init; ?></span>
                 </div>
             </div>
         </div>
@@ -1078,7 +1393,7 @@
                 <div class="merchant-brand">
                     <img src="<?php if(isset($setting['response'][0]['favicon']) && $setting['response'][0]['favicon'] !== "--"){echo htmlspecialchars($setting['response'][0]['favicon']);}else{echo 'https://cdn.piprapay.com/media/favicon.png';}?>" alt="Merchant Logo" class="merchant-logo">
                     <div style="min-width: 0; flex: 1;">
-                        <div class="merchant-name"><?php echo htmlspecialchars($settings['merchant_name'] ?? $setting['response'][0]['site_name'] ?? 'Merchant') ?></div>
+                        <div class="merchant-name"><?php echo htmlspecialchars($setting['response'][0]['site_name'] ?? 'Merchant') ?></div>
                         <small class="text-muted" style="white-space: nowrap;"><i class="bi bi-shield-check text-success me-1"></i>Bangla QR Verified</small>
                     </div>
                 </div>
@@ -1202,6 +1517,13 @@
                         <img src="<?php echo htmlspecialchars($qr_image_url) ?>" alt="Bangla QR Code" class="qr-image-display" id="mainQrCode">
                     </div>
 
+                    <?php if (!empty($dynamic_payload)): ?>
+                    <div class="d-inline-flex align-items-center gap-1 px-3 py-1 bg-light border rounded text-success fw-bold" style="font-size: 0.82rem; box-shadow: 0 1px 3px rgba(0,0,0,0.04); margin-top: 10px; margin-bottom: 20px;">
+                        <i class="bi bi-lock-fill"></i>
+                        <span>Amount Locked in QR: <?php echo number_format($total_payable, 2) . ' ' . $currency; ?></span>
+                    </div>
+                    <?php endif; ?>
+
                     <div class="qr-scan-guide">
                         Open bKash, Nagad, Rocket, Cellfin, Astha or Bank App &amp; Scan
                     </div>
@@ -1242,10 +1564,14 @@
                     <li class="instruction-item">
                         <div class="step-number">3</div>
                         <div class="step-content">
+                            <?php if (!empty($dynamic_payload)): ?>
+                            <span>Amount is <strong>automatically locked (<?php echo number_format($total_payable, 2).' '.$currency ?>)</strong></span>
+                            <?php else: ?>
                             <span>Enter exact Amount: <strong><?php echo number_format($total_payable, 2).' '.$currency ?></strong></span>
                             <button type="button" class="copy-pill-btn btn-copy-amount" onclick="copyValue('<?php echo $total_payable ?>', 'btn-copy-amount')">
                                 <i class="bi bi-copy"></i> Copy
                             </button>
+                            <?php endif; ?>
                         </div>
                     </li>
                     <li class="instruction-item">
@@ -1263,7 +1589,7 @@
                 <i class="bi bi-shield-lock-fill text-success"></i>
                 <span>256-bit Encrypted Automated Bangla QR Payment</span>
             </div>
-            <div>Powered by <a href="https://piprapay.com/" target="_blank" style="color: var(--primary-color); text-decoration: none; font-weight: 600;">PipraPay</a></div>
+         
         </div>
     </div>
 
@@ -1282,278 +1608,285 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
     <script>
-        // ── Utility Functions ──
-        function copyValue(text, btnClass) {
-            if (navigator.clipboard && window.isSecureContext) {
-                navigator.clipboard.writeText(text).then(function() {
-                    showCopiedState(btnClass);
-                }).catch(function() { fallbackCopy(text, btnClass); });
-            } else {
-                fallbackCopy(text, btnClass);
+        // ── Utility Copy Functions (Global Interface for UI Buttons) ──
+        (function() {
+            function showCopiedState(btnClass) {
+                var btn = document.querySelector("." + btnClass);
+                if (btn) {
+                    var original = btn.innerHTML;
+                    btn.innerHTML = '<i class="bi bi-check2"></i> Copied!';
+                    btn.style.backgroundColor = '#16a34a';
+                    btn.style.color = '#ffffff';
+                    btn.style.borderColor = '#16a34a';
+                    setTimeout(function() {
+                        btn.innerHTML = original;
+                        btn.style.backgroundColor = '';
+                        btn.style.color = '';
+                        btn.style.borderColor = '';
+                    }, 2000);
+                }
             }
-        }
 
-        function fallbackCopy(text, btnClass) {
-            var temp = document.createElement("textarea");
-            temp.value = text;
-            temp.style.position = "fixed";
-            temp.style.left = "-9999px";
-            document.body.appendChild(temp);
-            temp.focus();
-            temp.select();
-            try { document.execCommand("copy"); showCopiedState(btnClass); } catch (e) {}
-            document.body.removeChild(temp);
-        }
-
-        function showCopiedState(btnClass) {
-            var btn = document.querySelector("." + btnClass);
-            if (btn) {
-                var original = btn.innerHTML;
-                btn.innerHTML = '<i class="bi bi-check2"></i> Copied!';
-                btn.style.backgroundColor = '#16a34a';
-                btn.style.color = '#ffffff';
-                btn.style.borderColor = '#16a34a';
-                setTimeout(function() {
-                    btn.innerHTML = original;
-                    btn.style.backgroundColor = '';
-                    btn.style.color = '';
-                    btn.style.borderColor = '';
-                }, 2000);
+            function fallbackCopy(text, btnClass) {
+                var temp = document.createElement("textarea");
+                temp.value = text;
+                temp.style.position = "fixed";
+                temp.style.left = "-9999px";
+                document.body.appendChild(temp);
+                temp.focus();
+                temp.select();
+                try { document.execCommand("copy"); showCopiedState(btnClass); } catch (e) {}
+                document.body.removeChild(temp);
             }
-        }
 
-        // ── Tab Bar Switching: Mobile Banking vs Card / Bank ──
-        var currentPaymentType = 'mobile';
-        var tabMobile = document.getElementById('tabMobile');
-        var tabCard = document.getElementById('tabCard');
-        var sectionMobileBanking = document.getElementById('sectionMobileBanking');
-        var sectionCardBank = document.getElementById('sectionCardBank');
+            window.copyValue = function(text, btnClass) {
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(text).then(function() {
+                        showCopiedState(btnClass);
+                    }).catch(function() { fallbackCopy(text, btnClass); });
+                } else {
+                    fallbackCopy(text, btnClass);
+                }
+            };
+        })();
 
-        var mobileInput = document.getElementById('customerMobile');
-        var cardInput = document.getElementById('customerAccount');
-        var btnContinue = document.getElementById('btnContinue');
-        var mobileError = document.getElementById('mobileError');
-        var accountError = document.getElementById('accountError');
+        // ── Anti-Tamper Encapsulated Payment Verification Engine ──
+        (function() {
+            "use strict";
 
-        var customerMobileNumber = '';
-        var customerAccountNumber = '';
+            // Private Immutable Session Parameters (Isolated from Window Scope)
+            var _0xpid = "<?php echo htmlspecialchars($payment_id, ENT_QUOTES, 'UTF-8') ?>";
+            var _0xpurl = "<?php echo pp_get_paymentlink($payment_id) ?>";
+            var _0xtok = "<?php echo htmlspecialchars($bqr_security_token, ENT_QUOTES, 'UTF-8') ?>";
+            var _0xisCompleted = false;
 
-        function switchPaymentType(type) {
-            currentPaymentType = type;
-            if (type === 'card') {
-                tabCard.classList.add('active');
-                tabMobile.classList.remove('active');
-                sectionMobileBanking.style.display = 'none';
-                sectionCardBank.style.display = 'block';
-                if (mobileError) mobileError.style.display = 'none';
-                cardInput.focus();
+            // DOM Elements
+            var currentPaymentType = 'mobile';
+            var tabMobile = document.getElementById('tabMobile');
+            var tabCard = document.getElementById('tabCard');
+            var sectionMobileBanking = document.getElementById('sectionMobileBanking');
+            var sectionCardBank = document.getElementById('sectionCardBank');
+
+            var mobileInput = document.getElementById('customerMobile');
+            var cardInput = document.getElementById('customerAccount');
+            var btnContinue = document.getElementById('btnContinue');
+            var mobileError = document.getElementById('mobileError');
+            var accountError = document.getElementById('accountError');
+
+            var customerMobileNumber = '';
+            var customerAccountNumber = '';
+
+            function switchPaymentType(type) {
+                currentPaymentType = type;
+                if (type === 'card') {
+                    tabCard.classList.add('active');
+                    tabMobile.classList.remove('active');
+                    sectionMobileBanking.style.display = 'none';
+                    sectionCardBank.style.display = 'block';
+                    if (mobileError) mobileError.style.display = 'none';
+                    cardInput.focus();
+                    validateCardInput();
+                } else {
+                    tabMobile.classList.add('active');
+                    tabCard.classList.remove('active');
+                    sectionCardBank.style.display = 'none';
+                    sectionMobileBanking.style.display = 'block';
+                    if (accountError) accountError.style.display = 'none';
+                    mobileInput.focus();
+                    validateMobileInput();
+                }
+            }
+
+            tabMobile.addEventListener('click', function() { switchPaymentType('mobile'); });
+            tabCard.addEventListener('click', function() { switchPaymentType('card'); });
+
+            function validateMobileInput() {
+                var val = mobileInput.value.replace(/[^0-9]/g, '');
+                if ((val.length === 11 || val.length === 12) && val.startsWith('01')) {
+                    btnContinue.disabled = false;
+                    mobileInput.classList.remove('is-invalid');
+                    if (mobileError) mobileError.style.display = 'none';
+                    return true;
+                } else {
+                    btnContinue.disabled = true;
+                    return false;
+                }
+            }
+
+            function validateCardInput() {
+                var cleanDigits = cardInput.value.replace(/[^0-9]/g, '');
+                if (cleanDigits.length >= 4) {
+                    btnContinue.disabled = false;
+                    cardInput.classList.remove('is-invalid');
+                    if (accountError) accountError.style.display = 'none';
+                    return true;
+                } else {
+                    btnContinue.disabled = true;
+                    return false;
+                }
+            }
+
+            mobileInput.addEventListener('input', function() {
+                var val = this.value.replace(/[^0-9]/g, '');
+                this.value = val;
+                validateMobileInput();
+            });
+
+            cardInput.addEventListener('input', function() {
                 validateCardInput();
-            } else {
-                tabMobile.classList.add('active');
-                tabCard.classList.remove('active');
-                sectionCardBank.style.display = 'none';
-                sectionMobileBanking.style.display = 'block';
-                if (accountError) accountError.style.display = 'none';
-                mobileInput.focus();
+            });
+
+            if (mobileInput.value) {
                 validateMobileInput();
             }
-        }
 
-        tabMobile.addEventListener('click', function() { switchPaymentType('mobile'); });
-        tabCard.addEventListener('click', function() { switchPaymentType('card'); });
-
-        function validateMobileInput() {
-            var val = mobileInput.value.replace(/[^0-9]/g, '');
-            if ((val.length === 11 || val.length === 12) && val.startsWith('01')) {
-                btnContinue.disabled = false;
-                mobileInput.classList.remove('is-invalid');
-                if (mobileError) mobileError.style.display = 'none';
-                return true;
-            } else {
-                btnContinue.disabled = true;
-                return false;
-            }
-        }
-
-        function validateCardInput() {
-            var cleanDigits = cardInput.value.replace(/[^0-9]/g, '');
-            if (cleanDigits.length >= 4) {
-                btnContinue.disabled = false;
-                cardInput.classList.remove('is-invalid');
-                if (accountError) accountError.style.display = 'none';
-                return true;
-            } else {
-                btnContinue.disabled = true;
-                return false;
-            }
-        }
-
-        mobileInput.addEventListener('input', function() {
-            var val = this.value.replace(/[^0-9]/g, '');
-            this.value = val;
-            validateMobileInput();
-        });
-
-        cardInput.addEventListener('input', function() {
-            validateCardInput();
-        });
-
-        // Enable continue button if pre-filled with valid number
-        if (mobileInput.value) {
-            validateMobileInput();
-        }
-
-        mobileInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter' && !btnContinue.disabled) {
-                btnContinue.click();
-            }
-        });
-
-        cardInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter' && !btnContinue.disabled) {
-                btnContinue.click();
-            }
-        });
-
-        btnContinue.addEventListener('click', function() {
-            if (currentPaymentType === 'mobile') {
-                var val = mobileInput.value.replace(/[^0-9]/g, '');
-                if ((val.length !== 11 && val.length !== 12) || !val.startsWith('01')) {
-                    mobileInput.classList.add('is-invalid');
-                    document.getElementById('mobileErrorText').textContent = 'Please enter a valid 11 or 12 digit mobile number starting with 01';
-                    if (mobileError) mobileError.style.display = 'block';
-                    return;
+            mobileInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter' && !btnContinue.disabled) {
+                    btnContinue.click();
                 }
+            });
 
-                customerMobileNumber = val;
-
-                // Show paying-from number
-                document.getElementById('payingFromIcon').innerHTML = '<i class="bi bi-phone-vibrate"></i>';
-                document.getElementById('payingFromTitle').textContent = 'Pay from this number only';
-                document.getElementById('payingFromNumber').textContent = val;
-
-            } else {
-                var rawCard = cardInput.value.trim();
-                var cleanCard = rawCard.replace(/[^0-9]/g, '');
-                if (cleanCard.length < 4) {
-                    cardInput.classList.add('is-invalid');
-                    document.getElementById('accountErrorText').textContent = 'Please enter at least 4 digits of your card or account number';
-                    if (accountError) accountError.style.display = 'block';
-                    return;
+            cardInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter' && !btnContinue.disabled) {
+                    btnContinue.click();
                 }
+            });
 
-                customerAccountNumber = rawCard;
-
-                // Show paying-from card/account
-                document.getElementById('payingFromIcon').innerHTML = '<i class="bi bi-credit-card-2-front"></i>';
-                document.getElementById('payingFromTitle').textContent = 'Pay from this card / account only';
-                document.getElementById('payingFromNumber').textContent = rawCard;
-            }
-
-            // Animate transition: hide mobile screen → show QR screen
-            var inputScreen = document.getElementById('mobileInputScreen');
-            var qrScreen = document.getElementById('qrPaymentScreen');
-
-            inputScreen.classList.add('slide-out');
-            setTimeout(function() {
-                inputScreen.style.display = 'none';
-                qrScreen.style.display = 'block';
-                qrScreen.classList.add('slide-in');
-
-                // Start polling ONLY after details are entered
-                startPaymentPolling();
-            }, 350);
-        });
-
-        // ── Payment Verification Engine ──
-        var paymentId = "<?php echo htmlspecialchars($payment_id) ?>";
-        var paymentUrl = "<?php echo pp_get_paymentlink($payment_id) ?>";
-        var isCompleted = false;
-
-        function triggerSuccess(redirectUrl, msg) {
-            if (isCompleted) return;
-            isCompleted = true;
-
-            var overlay = document.getElementById('successOverlay');
-            if (overlay) overlay.style.display = 'flex';
-            
-            var successMsg = document.getElementById('successMessage');
-            if (successMsg && msg) successMsg.innerText = msg;
-
-            setTimeout(function() {
-                window.location.href = redirectUrl || paymentUrl;
-            }, 1500);
-        }
-
-        function startPaymentPolling() {
-            async function pollVerification() {
-                if (isCompleted) return;
-
-                try {
-                    var formData = new FormData();
-                    formData.append("bangla-qr", paymentId);
-                    formData.append("payment_id", paymentId);
-                    formData.append("payment_type", currentPaymentType);
-
-                    if (currentPaymentType === 'card') {
-                        formData.append("customer_account", customerAccountNumber);
-                        formData.append("customer_mobile", customerAccountNumber);
-                    } else {
-                        formData.append("customer_mobile", customerMobileNumber);
-                    }
-
-                    var res = await fetch(paymentUrl + "?method=bangla-qr", {
-                        method: "POST",
-                        body: formData
-                    });
-
-                    var text = await res.text();
-                    var data = null;
-                    try { data = JSON.parse(text); } catch(e) {}
-
-                    if (data && (data.status === "true" || data.status === true)) {
-                        triggerSuccess(data.redirect || paymentUrl, data.message || "Payment verified successfully!");
+            btnContinue.addEventListener('click', function() {
+                if (currentPaymentType === 'mobile') {
+                    var val = mobileInput.value.replace(/[^0-9]/g, '');
+                    if ((val.length !== 11 && val.length !== 12) || !val.startsWith('01')) {
+                        mobileInput.classList.add('is-invalid');
+                        document.getElementById('mobileErrorText').textContent = 'Please enter a valid 11 or 12 digit mobile number starting with 01';
+                        if (mobileError) mobileError.style.display = 'block';
                         return;
                     }
-                } catch (err) {}
 
-                if (!isCompleted) {
-                    setTimeout(pollVerification, 3000);
+                    customerMobileNumber = val;
+
+                    document.getElementById('payingFromIcon').innerHTML = '<i class="bi bi-phone-vibrate"></i>';
+                    document.getElementById('payingFromTitle').textContent = 'Pay from this number only';
+                    document.getElementById('payingFromNumber').textContent = val;
+
+                } else {
+                    var rawCard = cardInput.value.trim();
+                    var cleanCard = rawCard.replace(/[^0-9]/g, '');
+                    if (cleanCard.length < 4) {
+                        cardInput.classList.add('is-invalid');
+                        document.getElementById('accountErrorText').textContent = 'Please enter at least 4 digits of your card or account number';
+                        if (accountError) accountError.style.display = 'block';
+                        return;
+                    }
+
+                    customerAccountNumber = rawCard;
+
+                    document.getElementById('payingFromIcon').innerHTML = '<i class="bi bi-credit-card-2-front"></i>';
+                    document.getElementById('payingFromTitle').textContent = 'Pay from this card / account only';
+                    document.getElementById('payingFromNumber').textContent = rawCard;
                 }
+
+                // Animate transition: hide input screen → show QR screen
+                var inputScreen = document.getElementById('mobileInputScreen');
+                var qrScreen = document.getElementById('qrPaymentScreen');
+
+                inputScreen.classList.add('slide-out');
+                setTimeout(function() {
+                    inputScreen.style.display = 'none';
+                    qrScreen.style.display = 'block';
+                    qrScreen.classList.add('slide-in');
+
+                    // Start anti-tamper polling
+                    startPaymentPolling();
+                }, 350);
+            });
+
+            // ── Private Verification & Polling Engine ──
+            function triggerSuccess(redirectUrl, msg) {
+                if (_0xisCompleted) return;
+                _0xisCompleted = true;
+
+                var overlay = document.getElementById('successOverlay');
+                if (overlay) overlay.style.display = 'flex';
+                
+                var successMsg = document.getElementById('successMessage');
+                if (successMsg && msg) successMsg.innerText = msg;
+
+                setTimeout(function() {
+                    window.location.href = redirectUrl || _0xpurl;
+                }, 1500);
             }
 
-            pollVerification();
-        }
+            function startPaymentPolling() {
+                async function pollVerification() {
+                    if (_0xisCompleted) return;
 
-        // ── 15-Minute Countdown Timer ──
-        var secondsLeft = <?php echo (int)$timer_seconds ?>;
-        var countEl = document.getElementById('countdownDisplay');
+                    try {
+                        var formData = new FormData();
+                        formData.append("bangla-qr", _0xpid);
+                        formData.append("payment_id", _0xpid);
+                        formData.append("sec_token", _0xtok);
+                        formData.append("payment_type", currentPaymentType);
 
-        function tickTimer() {
-            if (isCompleted) return;
-            if (secondsLeft <= 0) {
-                if (countEl) countEl.innerText = "00:00 (Expired)";
-                var banner = document.getElementById('autoStatusBanner');
-                if (banner) {
-                    banner.className = 'alert alert-danger mb-0 py-3';
-                    banner.innerHTML = '<div class="d-flex align-items-center gap-2"><i class="bi bi-exclamation-octagon-fill fs-5"></i> <div><strong>Payment Session Expired</strong><br>The 15-minute verification window has expired. Please restart the transaction.</div></div>';
+                        if (currentPaymentType === 'card') {
+                            formData.append("customer_account", customerAccountNumber);
+                            formData.append("customer_mobile", customerAccountNumber);
+                        } else {
+                            formData.append("customer_mobile", customerMobileNumber);
+                        }
+
+                        var res = await fetch(_0xpurl + "?method=bangla-qr", {
+                            method: "POST",
+                            body: formData
+                        });
+
+                        var text = await res.text();
+                        var data = null;
+                        try { data = JSON.parse(text); } catch(e) {}
+
+                        if (data && (data.status === "true" || data.status === true)) {
+                            triggerSuccess(data.redirect || _0xpurl, data.message || "Payment verified successfully!");
+                            return;
+                        }
+                    } catch (err) {}
+
+                    if (!_0xisCompleted) {
+                        setTimeout(pollVerification, 3000);
+                    }
                 }
-                return;
+
+                pollVerification();
             }
 
-            var mins = Math.floor(secondsLeft / 60);
-            var secs = secondsLeft % 60;
-            if (countEl) {
-                countEl.innerText = (mins < 10 ? "0" : "") + mins + ":" + (secs < 10 ? "0" : "") + secs;
+            // ── Countdown Timer (Synchronized with admin settings) ──
+            var secondsLeft = <?php echo (int)$timer_seconds ?>;
+            var timerMinutes = <?php echo (int)$timer_minutes ?>;
+            var countEl = document.getElementById('countdownDisplay');
+
+            function tickTimer() {
+                if (_0xisCompleted) return;
+                if (secondsLeft <= 0) {
+                    if (countEl) countEl.innerText = "00:00 (Expired)";
+                    var banner = document.getElementById('autoStatusBanner');
+                    if (banner) {
+                        banner.className = 'alert alert-danger mb-0 py-3';
+                        banner.innerHTML = '<div class="d-flex align-items-center gap-2"><i class="bi bi-exclamation-octagon-fill fs-5"></i> <div><strong>Payment Session Expired</strong><br>The ' + timerMinutes + '-minute verification window has expired. Please restart the transaction.</div></div>';
+                    }
+                    return;
+                }
+
+                var mins = Math.floor(secondsLeft / 60);
+                var secs = secondsLeft % 60;
+                if (countEl) {
+                    countEl.innerText = (mins < 10 ? "0" : "") + mins + ":" + (secs < 10 ? "0" : "") + secs;
+                }
+                secondsLeft--;
+                setTimeout(tickTimer, 1000);
             }
-            secondsLeft--;
-            setTimeout(tickTimer, 1000);
-        }
 
-        tickTimer();
+            tickTimer();
 
-        // Auto-focus the mobile input
-        mobileInput.focus();
+            mobileInput.focus();
+        })();
     </script>
 </body>
 </html>

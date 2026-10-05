@@ -33,27 +33,59 @@ $target_qr = $assets_dir . 'qr.png';
 $target_default = $assets_dir . 'bangla-qr-default.jpg';
 
 $copied = @move_uploaded_file($file['tmp_name'], $target_qr);
-if ($copied) {
-    @copy($target_qr, $target_default);
-    echo json_encode([
-        'status' => true,
-        'message' => 'Bangla QR image uploaded and saved successfully!',
-        'timestamp' => time()
-    ]);
-} else {
+if (!$copied) {
     $content = @file_get_contents($file['tmp_name']);
-    if ($content && @file_put_contents($target_qr, $content)) {
-        @copy($target_qr, $target_default);
-        echo json_encode([
-            'status' => true,
-            'message' => 'Bangla QR image saved successfully!',
-            'timestamp' => time()
-        ]);
-    } else {
-        echo json_encode([
-            'status' => false,
-            'message' => 'Failed to write image file. Please verify folder write permissions on assets directory.'
-        ]);
+    if ($content) {
+        @file_put_contents($target_qr, $content);
+        $copied = true;
     }
 }
+
+if (!$copied && !file_exists($target_qr)) {
+    echo json_encode([
+        'status' => false,
+        'message' => 'Failed to write image file. Please verify folder write permissions on assets directory.'
+    ]);
+    exit();
+}
+
+@copy($target_qr, $target_default);
+
+// Extract Base Bangla QR EMVCo Payload from the uploaded QR image
+$decoded_payload = null;
+if (function_exists('curl_init') && file_exists($target_qr)) {
+    $ch = curl_init();
+    $mime = function_exists('mime_content_type') ? @mime_content_type($target_qr) : 'image/png';
+    if (!$mime) $mime = 'image/png';
+    $cfile = new CURLFile($target_qr, $mime, basename($target_qr));
+    curl_setopt_array($ch, [
+        CURLOPT_URL => 'https://api.qrserver.com/v1/read-qr-code/',
+        CURLOPT_POST => 1,
+        CURLOPT_POSTFIELDS => ['file' => $cfile],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 8,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYHOST => false
+    ]);
+    $res = curl_exec($ch);
+    curl_close($ch);
+    if ($res) {
+        $parsed = @json_decode($res, true);
+        if (!empty($parsed[0]['symbol'][0]['data'])) {
+            $decoded_payload = trim($parsed[0]['symbol'][0]['data']);
+        }
+    }
+}
+
+$msg = 'Bangla QR image uploaded and saved successfully!';
+if (!empty($decoded_payload)) {
+    $msg .= ' Base Bangla QR Payload was automatically extracted.';
+}
+
+echo json_encode([
+    'status' => true,
+    'message' => $msg,
+    'payload' => $decoded_payload,
+    'timestamp' => time()
+]);
 exit();
